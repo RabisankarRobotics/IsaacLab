@@ -150,6 +150,18 @@ class HV1_2StandRewardsCfg:
         weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINTS)},
     )
+    # Keep hip yaw/roll near defaults so the legs don't cross inward
+    # (without this the policy converges to a feet-touching stance).
+    joint_deviation_hip = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.4,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["^(left|right)_hip_(yaw|roll)_joint$"],
+            )
+        },
+    )
 
 
 @configclass

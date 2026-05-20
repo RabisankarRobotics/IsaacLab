@@ -181,26 +181,14 @@ class HV1_2VelocityRewardsCfg:
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_(pitch|roll)_joint$"])},
     )
-    # ---- keep upper body honest (no flailing torque feedback) ----
+    # Keep hip yaw/roll near defaults so the feet don't cross inward.
+    # (Only joints in the policy's action space are penalized here —
+    # waist/arms/head are PD-pinned and the policy can't influence them,
+    # so penalizing their deviation would be reward noise.)
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_(yaw|roll)_joint$"])},
-    )
-    joint_deviation_waist = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.2,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WAIST_JOINT_NAMES)},
-    )
-    joint_deviation_arms = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES)},
-    )
-    joint_deviation_head = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=HEAD_JOINT_NAMES)},
     )
 
 

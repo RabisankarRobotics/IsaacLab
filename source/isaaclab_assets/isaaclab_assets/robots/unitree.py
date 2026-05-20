@@ -710,16 +710,76 @@ G1_INSPIRE_FTP_CFG.actuators["hands"] = ImplicitActuatorCfg(
 # HV1.2 custom humanoid (32 DoF). Source: source/isaaclab_assets/data/custom_robot/
 # Structurally similar to H1-2 but with 3-DoF waist, 3-DoF wrists, and 3-DoF head.
 # Per-motor specs supplied by the user: X4-36, X6-60, X8-120, X12-320.
+#
+# We spawn from the URDF (not the pre-generated USD) so Isaac Lab regenerates a
+# clean self-contained USD on first launch. The provided _robot.usd in
+# data/custom_robot/usd/hv1_2/configuration/ is a thin wrapper that references
+# _base.usd; those references don't resolve correctly under
+# /World/envs/env_*/Robot, so spawning _robot.usd directly fails with
+# "no rigid bodies are present under this prim".
 # ---------------------------------------------------------------------------
-HV1_2_USD_PATH = (
+HV1_2_URDF_PATH = (
     "/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/"
-    "usd/hv1_2/configuration/HV1.2 URDF V2.2_robot.usd"
+    "urdf_mesh/hv1_2/HV1.2 URDF V2.2.urdf"
 )
 
 HV1_2_CFG = ArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(
-        usd_path=HV1_2_USD_PATH,
+    spawn=sim_utils.UrdfFileCfg(
+        asset_path=HV1_2_URDF_PATH,
+        fix_base=False,
+        merge_fixed_joints=True,
+        self_collision=False,
         activate_contact_sensors=True,
+        joint_drive=sim_utils.UrdfFileCfg.JointDriveCfg(
+            target_type="position",
+            drive_type="force",
+            gains=sim_utils.UrdfFileCfg.JointDriveCfg.PDGainsCfg(
+                # Mirror the per-actuator-type stiffness/damping below.
+                # These get baked into the joint drives in the generated USD.
+                stiffness={
+                    ".*_hip_yaw_joint": 250.0,
+                    ".*_hip_roll_joint": 250.0,
+                    ".*_hip_pitch_joint": 250.0,
+                    ".*_knee_joint": 250.0,
+                    ".*_ankle_pitch_joint": 200.0,
+                    ".*_ankle_roll_joint": 200.0,
+                    ".*_wrist_roll_joint": 200.0,
+                    "waist_yaw_joint": 200.0,
+                    "waist_roll_joint": 200.0,
+                    "waist_pitch_joint": 200.0,
+                    ".*_shoulder_pitch_joint": 200.0,
+                    ".*_shoulder_roll_joint": 200.0,
+                    ".*_shoulder_yaw_joint": 200.0,
+                    ".*_elbow_joint": 200.0,
+                    ".*_wrist_pitch_joint": 80.0,
+                    ".*_wrist_yaw_joint": 80.0,
+                    "head_pitch_joint": 80.0,
+                    "head_roll_joint": 80.0,
+                    "head_yaw_joint": 80.0,
+                },
+                damping={
+                    ".*_hip_yaw_joint": 15.0,
+                    ".*_hip_roll_joint": 15.0,
+                    ".*_hip_pitch_joint": 15.0,
+                    ".*_knee_joint": 15.0,
+                    ".*_ankle_pitch_joint": 25.0,
+                    ".*_ankle_roll_joint": 25.0,
+                    ".*_wrist_roll_joint": 25.0,
+                    "waist_yaw_joint": 20.0,
+                    "waist_roll_joint": 20.0,
+                    "waist_pitch_joint": 20.0,
+                    ".*_shoulder_pitch_joint": 20.0,
+                    ".*_shoulder_roll_joint": 20.0,
+                    ".*_shoulder_yaw_joint": 20.0,
+                    ".*_elbow_joint": 20.0,
+                    ".*_wrist_pitch_joint": 3.0,
+                    ".*_wrist_yaw_joint": 3.0,
+                    "head_pitch_joint": 3.0,
+                    "head_roll_joint": 3.0,
+                    "head_yaw_joint": 3.0,
+                },
+            ),
+        ),
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
             retain_accelerations=False,

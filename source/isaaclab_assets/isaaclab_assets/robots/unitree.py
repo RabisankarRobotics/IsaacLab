@@ -704,3 +704,131 @@ G1_INSPIRE_FTP_CFG.actuators["hands"] = ImplicitActuatorCfg(
     damping=0.2,
     armature=0.001,
 )
+
+
+# ---------------------------------------------------------------------------
+# HV1.2 custom humanoid (32 DoF). Source: source/isaaclab_assets/data/custom_robot/
+# Structurally similar to H1-2 but with 3-DoF waist, 3-DoF wrists, and 3-DoF head.
+# Per-motor specs supplied by the user: X4-36, X6-60, X8-120, X12-320.
+# ---------------------------------------------------------------------------
+HV1_2_USD_PATH = (
+    "/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/"
+    "usd/hv1_2/configuration/HV1.2 URDF V2.2_robot.usd"
+)
+
+HV1_2_CFG = ArticulationCfg(
+    spawn=sim_utils.UsdFileCfg(
+        usd_path=HV1_2_USD_PATH,
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=False,
+            solver_position_iteration_count=8,
+            solver_velocity_iteration_count=4,
+        ),
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.98),
+        joint_pos={
+            ".*_hip_yaw_joint": 0.0,
+            ".*_hip_roll_joint": 0.0,
+            ".*_hip_pitch_joint": -0.16,
+            ".*_knee_joint": 0.36,
+            ".*_ankle_pitch_joint": -0.2,
+            ".*_ankle_roll_joint": 0.0,
+            "waist_yaw_joint": 0.0,
+            "waist_roll_joint": 0.0,
+            "waist_pitch_joint": 0.0,
+            ".*_shoulder_pitch_joint": 0.4,
+            ".*_shoulder_roll_joint": 0.0,
+            ".*_shoulder_yaw_joint": 0.0,
+            ".*_elbow_joint": 0.3,
+            ".*_wrist_roll_joint": 0.0,
+            ".*_wrist_pitch_joint": 0.0,
+            ".*_wrist_yaw_joint": 0.0,
+            "head_pitch_joint": 0.0,
+            "head_roll_joint": 0.0,
+            "head_yaw_joint": 0.0,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    soft_joint_pos_limit_factor=0.9,
+    actuators={
+        # X12-320: hip pitch/roll/yaw + knee (both sides) = 8 joints
+        "legs_x12_320": ImplicitActuatorCfg(
+            joint_names_expr=[
+                ".*_hip_yaw_joint",
+                ".*_hip_roll_joint",
+                ".*_hip_pitch_joint",
+                ".*_knee_joint",
+            ],
+            effort_limit_sim=85.0,
+            velocity_limit_sim=10.0,
+            stiffness=250.0,
+            damping=15.0,
+            armature=0.326938,
+            friction=1.694307,
+            viscous_friction=0.350134,
+        ),
+        # X6-60: ankle pitch/roll + wrist_roll (both sides) = 6 joints
+        "ankle_wristroll_x6_60": ImplicitActuatorCfg(
+            joint_names_expr=[
+                ".*_ankle_pitch_joint",
+                ".*_ankle_roll_joint",
+                ".*_wrist_roll_joint",
+            ],
+            effort_limit_sim=20.0,
+            velocity_limit_sim=16.0,
+            stiffness=200.0,
+            damping=25.0,
+            armature=0.019603,
+            friction=0.321816,
+            viscous_friction=0.165640,
+        ),
+        # X8-120: waist (3) + shoulder pitch/roll/yaw + elbow (both sides) = 11 joints
+        "waist_shoulder_elbow_x8_120": ImplicitActuatorCfg(
+            joint_names_expr=[
+                "waist_yaw_joint",
+                "waist_roll_joint",
+                "waist_pitch_joint",
+                ".*_shoulder_pitch_joint",
+                ".*_shoulder_roll_joint",
+                ".*_shoulder_yaw_joint",
+                ".*_elbow_joint",
+            ],
+            effort_limit_sim=43.0,
+            velocity_limit_sim=13.0,
+            stiffness=200.0,
+            damping=20.0,
+            armature=0.065893,
+            friction=0.849291,
+            viscous_friction=0.379237,
+        ),
+        # X4-36: wrist pitch/yaw + head pitch/roll/yaw = 7 joints
+        "wrist_head_x4_36": ImplicitActuatorCfg(
+            joint_names_expr=[
+                ".*_wrist_pitch_joint",
+                ".*_wrist_yaw_joint",
+                "head_pitch_joint",
+                "head_roll_joint",
+                "head_yaw_joint",
+            ],
+            effort_limit_sim=10.5,
+            velocity_limit_sim=8.6,
+            stiffness=80.0,
+            damping=3.0,
+            armature=0.045213,
+            friction=0.388995,
+            viscous_friction=0.154954,
+        ),
+    },
+)
+"""HV1.2 custom humanoid (32 DoF) for the standing/walking task."""

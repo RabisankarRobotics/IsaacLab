@@ -12,9 +12,35 @@ import torch
 
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def feet_lateral_distance_clearance(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    min_distance: float = 0.18,
+) -> torch.Tensor:
+    """One-sided clearance penalty: positive when the two feet are LATERALLY
+    closer than `min_distance` (measured in the robot's yaw frame).
+
+    * `asset_cfg.body_ids` must resolve to exactly two bodies (the left and
+      right foot links — e.g. body_names=[".*_ankle_roll_link"]).
+    * Returns `max(0, min_distance - actual_lateral_distance)` per env, so
+      it's zero when the feet have enough lateral clearance and grows as
+      they come together. Use with a NEGATIVE weight in RewardsCfg.
+
+    Lateral = Y component in the yaw-aligned base frame, so forward stride
+    motion (X separation) doesn't trigger the penalty.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    feet_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, :]  # (N, 2, 3)
+    rel_pos_w = feet_pos_w[:, 1] - feet_pos_w[:, 0]               # (N, 3)
+    rel_pos_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), rel_pos_w)
+    lateral_distance = torch.abs(rel_pos_yaw[:, 1])               # (N,)
+    return torch.clamp(min_distance - lateral_distance, min=0.0)
 
 
 def randomize_arm_joint_targets(

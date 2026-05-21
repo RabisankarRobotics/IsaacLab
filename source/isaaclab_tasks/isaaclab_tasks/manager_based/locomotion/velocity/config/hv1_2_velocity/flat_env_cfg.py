@@ -137,29 +137,31 @@ class HV1_2VelocityEventCfg(EventCfg):
 class HV1_2VelocityRewardsCfg:
     """Velocity-tracking rewards (walking)."""
 
-    # ---- tracking (reduced from 1.0 — was dominating the gradient and
-    #      the policy was earning it by shuffling instead of stepping) ----
+    # ---- tracking (restored to 1.0 — strong velocity command pulls the
+    #      robot forward, which is impossible while balancing on one leg) ----
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=0.5,
+        weight=1.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=0.5,
+        weight=1.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
-    # ---- gait (heavily boosted — this is the signal that should force
-    #      knee flexion and single-foot stance) ----
+    # ---- gait (back to 1.0 — at 2.5 the policy stood on one leg forever
+    #      because feet_air_time_positive_biped rewards ANY single-stance,
+    #      not alternating stance. Tracking now has to do the walking work) ----
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=2.5,
+        weight=1.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
             "threshold": 0.4,
         },
     )
+    # Anti-shuffle — still strong: feet must lift, not slide.
     feet_slide = RewTerm(
         func=mdp.feet_slide,
         weight=-1.0,
@@ -172,14 +174,13 @@ class HV1_2VelocityRewardsCfg:
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
-    # Pelvis stays near ~0.95 m so the policy MUST bend the knees to avoid
-    # stilt-walking (penalty was zero before, which is why knees stayed straight).
+    # Forces knee flexion: pelvis must sit at ~0.95 m, can't stilt-walk.
     base_height_l2 = RewTerm(
         func=mdp.base_height_l2,
         weight=-1.0,
         params={"target_height": 0.95},
     )
-    # ---- effort / smoothness (reduced — was suppressing dynamic leg swing) ----
+    # ---- effort / smoothness ----
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.002)
     # ---- safety ----
@@ -190,12 +191,22 @@ class HV1_2VelocityRewardsCfg:
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_(pitch|roll)_joint$"])},
     )
-    # Keep hip yaw/roll near defaults so the feet don't cross inward.
-    # Stronger weight (-1.0) — the previous -0.4 was being violated to gain
-    # tracking reward. Only the policy-actuated joints are penalized here.
+    # Penalize the OUTCOME (feet too close in yaw-frame Y) rather than the
+    # MEANS (hip deviation). Lets the policy use hip_roll freely for balance
+    # while strictly preventing leg crossing. One-sided: zero when clear.
+    feet_lateral_clearance = RewTerm(
+        func=custom_mdp.feet_lateral_distance_clearance,
+        weight=-10.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "min_distance": 0.18,  # ~half of standing 0.34 m separation
+        },
+    )
+    # Softer hip-deviation now that feet_lateral_clearance does the heavy
+    # lifting — kept at low weight as a secondary nudge.
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1.0,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_(yaw|roll)_joint$"])},
     )
 

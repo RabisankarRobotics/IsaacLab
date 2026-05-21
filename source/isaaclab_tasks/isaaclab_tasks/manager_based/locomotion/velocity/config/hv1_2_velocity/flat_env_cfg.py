@@ -137,21 +137,23 @@ class HV1_2VelocityEventCfg(EventCfg):
 class HV1_2VelocityRewardsCfg:
     """Velocity-tracking rewards (walking)."""
 
-    # ---- tracking ----
+    # ---- tracking (reduced from 1.0 — was dominating the gradient and
+    #      the policy was earning it by shuffling instead of stepping) ----
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
+        weight=0.5,
         params={"command_name": "base_velocity", "std": 0.5},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=1.0,
+        weight=0.5,
         params={"command_name": "base_velocity", "std": 0.5},
     )
-    # ---- gait ----
+    # ---- gait (heavily boosted — this is the signal that should force
+    #      knee flexion and single-foot stance) ----
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=1.0,
+        weight=2.5,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
@@ -160,7 +162,7 @@ class HV1_2VelocityRewardsCfg:
     )
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.25,
+        weight=-1.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_roll_link"),
@@ -170,9 +172,16 @@ class HV1_2VelocityRewardsCfg:
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
-    # ---- effort / smoothness ----
+    # Pelvis stays near ~0.95 m so the policy MUST bend the knees to avoid
+    # stilt-walking (penalty was zero before, which is why knees stayed straight).
+    base_height_l2 = RewTerm(
+        func=mdp.base_height_l2,
+        weight=-1.0,
+        params={"target_height": 0.95},
+    )
+    # ---- effort / smoothness (reduced — was suppressing dynamic leg swing) ----
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.002)
     # ---- safety ----
     is_alive = RewTerm(func=mdp.is_alive, weight=0.15)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
@@ -182,12 +191,11 @@ class HV1_2VelocityRewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_(pitch|roll)_joint$"])},
     )
     # Keep hip yaw/roll near defaults so the feet don't cross inward.
-    # (Only joints in the policy's action space are penalized here —
-    # waist/arms/head are PD-pinned and the policy can't influence them,
-    # so penalizing their deviation would be reward noise.)
+    # Stronger weight (-1.0) — the previous -0.4 was being violated to gain
+    # tracking reward. Only the policy-actuated joints are penalized here.
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.4,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_(yaw|roll)_joint$"])},
     )
 

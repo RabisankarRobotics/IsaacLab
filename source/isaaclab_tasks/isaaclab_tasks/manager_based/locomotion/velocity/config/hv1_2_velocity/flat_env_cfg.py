@@ -174,17 +174,21 @@ class HV1_2VelocityRewardsCfg:
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
-    # Pelvis target: 0.95 m. Strong weight (-10) is required because the
-    # policy will otherwise drop into a deep crouch (lower CoG = more
-    # stable) — we want a natural standing-height stride, not a squat walk.
-    base_height_l2 = RewTerm(
-        func=mdp.base_height_l2,
-        weight=-10.0,
-        params={"target_height": 0.95},
+    # One-sided "no-squat" penalty: zero when pelvis is at or above 0.92 m,
+    # quadratic in shortfall when below. The previous symmetric base_height_l2
+    # at -10 was too soft on the crouch side (-0.115/step paid willingly).
+    # The asymmetric form lets the policy stand tall freely while making
+    # any drop below 0.92 expensive.
+    base_height_below = RewTerm(
+        func=custom_mdp.base_height_below_target_l2,
+        weight=-50.0,
+        params={"target_height": 0.92},
     )
-    # ---- effort / smoothness ----
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.002)
+    # ---- effort / smoothness (bumped to kill the leg vibration: the policy
+    #      was changing actions at rate ~80/step → jerky gait. Stronger
+    #      penalties force smoother joint targets.) ----
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-5.0e-7)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
     # ---- safety ----
     is_alive = RewTerm(func=mdp.is_alive, weight=0.15)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)

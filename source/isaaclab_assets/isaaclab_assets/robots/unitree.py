@@ -720,7 +720,7 @@ G1_INSPIRE_FTP_CFG.actuators["hands"] = ImplicitActuatorCfg(
 # ---------------------------------------------------------------------------
 HV1_2_URDF_PATH = (
     "/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/"
-    "urdf_mesh/hv1_2/HV1.2 URDF V2.2.urdf"
+    "urdf_mesh/hv1_2/hv1_2.urdf"
 )
 
 HV1_2_CFG = ArticulationCfg(

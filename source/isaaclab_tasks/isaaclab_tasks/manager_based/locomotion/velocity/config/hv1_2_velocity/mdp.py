@@ -18,6 +18,28 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+def base_height_below_target_l2(
+    env: "ManagerBasedRLEnv",
+    target_height: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """One-sided L2 penalty when the base sags BELOW `target_height`.
+
+    Returns max(0, target - actual_height) ** 2 per env.
+    * Zero if the pelvis is at or above the target — robot is free to stand tall.
+    * Quadratic in the shortfall — small sag costs little, deep crouch costs a lot.
+    Use with a NEGATIVE weight.
+
+    This replaces the standard `base_height_l2` (which is symmetric and was too
+    soft on the squat side to actually pull the policy out of a deep-crouch
+    walk).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    base_height = asset.data.root_pos_w[:, 2]
+    shortfall = torch.clamp(target_height - base_height, min=0.0)
+    return shortfall * shortfall
+
+
 def feet_lateral_distance_clearance(
     env: "ManagerBasedRLEnv",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

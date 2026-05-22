@@ -155,12 +155,12 @@ class HV1_2VelocityRewardsCfg:
     # (smooth swing). Reference: Unitree G1 rough_env_cfg uses weight=0.25.
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=0.25,  # was 1.0 — let velocity tracking shape the gait, this
+        weight=1.0,  # was 1.0 — let velocity tracking shape the gait, this
                       # is now a tiebreaker for single-stance.
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
-            "threshold": 0.4,
+            "threshold": 0.3,
         },
     )
     feet_slide = RewTerm(
@@ -233,12 +233,21 @@ class HV1_2VelocityRewardsCfg:
             "min_distance": 0.18,  # ~half of standing 0.34 m separation
         },
     )
-    # Softer hip-deviation now that feet_lateral_clearance does the heavy
-    # lifting — kept at low weight as a secondary nudge.
-    joint_deviation_hip = RewTerm(
+    # Split hip-deviation into two terms so we can target each axis at the
+    # right strength:
+    #   * hip_YAW = the "duck-foot / outward leg rotation" axis. Strong weight
+    #     because the policy was visibly twisting one leg out.
+    #   * hip_ROLL = sideways leg splay. Kept moderate; feet_lateral_clearance
+    #     already prevents the bad outcome (legs crossing or splaying too far).
+    joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.2,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_(yaw|roll)_joint$"])},
+        weight=-0.5,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
+    )
+    joint_deviation_hip_roll = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.4,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_roll_joint$"])},
     )
 
 
@@ -323,6 +332,6 @@ class HV1_2VelocityFlatEnvCfg_PLAY(HV1_2VelocityFlatEnvCfg):
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None
         # For inspection, hold the command at a steady forward walk.
-        self.commands.base_velocity.ranges.lin_vel_x = (0.5, 0.5)
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)

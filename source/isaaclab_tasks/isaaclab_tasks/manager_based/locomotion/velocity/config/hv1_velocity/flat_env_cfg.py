@@ -308,6 +308,6 @@ class HV1VelocityFlatEnvCfg_PLAY(HV1VelocityFlatEnvCfg):
         # Inspect with a steady forward walk; toggle rel_standing_envs to see
         # standing behavior.
         self.commands.base_velocity.rel_standing_envs = 0.0
-        self.commands.base_velocity.ranges.lin_vel_x = (0.5, 0.5)
+        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.5)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)

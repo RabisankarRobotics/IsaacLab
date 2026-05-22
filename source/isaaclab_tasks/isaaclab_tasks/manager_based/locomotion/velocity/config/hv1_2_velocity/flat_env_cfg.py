@@ -174,21 +174,23 @@ class HV1_2VelocityRewardsCfg:
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
-    # One-sided "no-squat" penalty: zero when pelvis is at or above 0.92 m,
-    # quadratic in shortfall when below. The previous symmetric base_height_l2
-    # at -10 was too soft on the crouch side (-0.115/step paid willingly).
-    # The asymmetric form lets the policy stand tall freely while making
-    # any drop below 0.92 expensive.
+    # One-sided L1 "no-squat" penalty: zero when pelvis is at or above 0.92 m,
+    # linear in shortfall below. L1 (vs the previous L2 at weight -50) avoids
+    # the value-function blow-up when a falling env hits shortfall ≈ 0.8 m.
+    #   normal walk at 0.93 → 0 penalty
+    #   crouch at 0.84    → shortfall 0.08, penalty -0.8 (bigger than tracking gain)
+    #   fall at 0.10      → shortfall 0.82, penalty -8.2 (large but bounded)
     base_height_below = RewTerm(
-        func=custom_mdp.base_height_below_target_l2,
-        weight=-50.0,
+        func=custom_mdp.base_height_below_target_l1,
+        weight=-10.0,
         params={"target_height": 0.92},
     )
-    # ---- effort / smoothness (bumped to kill the leg vibration: the policy
-    #      was changing actions at rate ~80/step → jerky gait. Stronger
-    #      penalties force smoother joint targets.) ----
+    # ---- effort / smoothness ----
+    # Backed off from -0.005 — paired with the height-penalty rework, that
+    # was too many tight new constraints at once and PPO went chaotic.
+    # -0.003 is between original (-0.002) and the over-aggressive (-0.005).
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-5.0e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.003)
     # ---- safety ----
     is_alive = RewTerm(func=mdp.is_alive, weight=0.15)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)

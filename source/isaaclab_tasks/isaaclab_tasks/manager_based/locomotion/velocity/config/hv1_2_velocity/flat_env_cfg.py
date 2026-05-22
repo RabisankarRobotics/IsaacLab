@@ -149,30 +149,48 @@ class HV1_2VelocityRewardsCfg:
         weight=1.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
-    # ---- gait: switched from feet_air_time_positive_biped to the
-    # alternation-requiring `feet_air_time`. The "_positive_biped" variant
-    # paid the policy continuously during single-stance — so the policy
-    # learned a yoga-pose-and-step gait. The standard `feet_air_time`
-    # pays out ONLY at touchdown (`first_contact`), so a long held-up leg
-    # earns 0 until it actually steps down. Forces alternating steps.
+    # ---- gait: keep the bipedal single-stance reward (it got the robot
+    # stepping) but dial weights down to G1-style values and ADD gait-shape
+    # terms — variance penalty (anti-asymmetry) and foot clearance reward
+    # (smooth swing). Reference: Unitree G1 rough_env_cfg uses weight=0.25.
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time,
-        weight=1.0,
+        func=mdp.feet_air_time_positive_biped,
+        weight=0.25,  # was 1.0 — let velocity tracking shape the gait, this
+                      # is now a tiebreaker for single-stance.
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
-            "threshold": 0.3,  # lowered from 0.4: gives positive reward as
-                                # soon as the foot was in air > 0.3 s before
-                                # touchdown. Easier early-training signal.
+            "threshold": 0.4,
         },
     )
-    # Anti-shuffle — still strong: feet must lift, not slide.
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-1.0,
+        weight=-0.1,  # was -1.0; G1 uses -0.1. Still anti-shuffle.
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_roll_link"),
+        },
+    )
+    # NEW: direct asymmetric-gait penalty (the yoga-walk fix).
+    # Penalizes variance of last_air_time and last_contact_time across the
+    # two feet. Zero when both feet step in the same rhythm.
+    feet_airtime_variance = RewTerm(
+        func=custom_mdp.air_time_variance_penalty,
+        weight=-1.0,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link")},
+    )
+    # NEW: rewards swing-foot clearance — encourages a clean foot-lift arc
+    # rather than dragging. Target = 0.10 m above ground (HV1.2 foot
+    # thickness is ~0.04 m, so this is ~6 cm of clearance). Only active
+    # while the foot is moving (tanh gate on xy-velocity).
+    foot_clearance = RewTerm(
+        func=custom_mdp.foot_clearance_reward,
+        weight=0.5,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "target_height": 0.10,
+            "std": 0.05,
+            "tanh_mult": 2.0,
         },
     )
     # ---- stability ----

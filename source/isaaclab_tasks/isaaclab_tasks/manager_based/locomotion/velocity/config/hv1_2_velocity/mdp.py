@@ -18,6 +18,52 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+def air_time_variance_penalty(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize variance in air/contact time across feet (asymmetric-gait penalty).
+
+    Adapted from Boston Dynamics Spot's MDP. If both feet spend the same time
+    in the air and the same time in contact, variance is 0. If one foot stays
+    up much longer than the other (yoga-walk), variance is high.
+
+    Returns var(last_air_time, clipped at 0.5) + var(last_contact_time, clipped at 0.5).
+    The clip prevents runaway penalty during very long stance phases.
+    """
+    from isaaclab.sensors import ContactSensor
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    if contact_sensor.cfg.track_air_time is False:
+        raise RuntimeError("Activate ContactSensor's track_air_time!")
+    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
+    last_contact_time = contact_sensor.data.last_contact_time[:, sensor_cfg.body_ids]
+    return (
+        torch.var(torch.clip(last_air_time, max=0.5), dim=1)
+        + torch.var(torch.clip(last_contact_time, max=0.5), dim=1)
+    )
+
+
+def foot_clearance_reward(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg,
+    target_height: float,
+    std: float,
+    tanh_mult: float,
+) -> torch.Tensor:
+    """Reward swinging feet for clearing `target_height` off the ground.
+
+    Adapted from Boston Dynamics Spot's MDP. The tanh on foot horizontal velocity
+    ensures the reward only kicks in while the foot is actually moving (swing
+    phase), not while it's planted.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    foot_z_err = torch.square(asset.data.body_pos_w[:, asset_cfg.body_ids, 2] - target_height)
+    foot_xy_speed = torch.norm(asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2], dim=2)
+    reward = foot_z_err * torch.tanh(tanh_mult * foot_xy_speed)
+    return torch.exp(-torch.sum(reward, dim=1) / std)
+
+
 def base_height_below_target_l1(
     env: "ManagerBasedRLEnv",
     target_height: float,

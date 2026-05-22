@@ -14,7 +14,9 @@ class HV1VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "hv1_velocity_flat"
 
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
+        # Start at 0.6 (was 1.0). 1.0 + entropy bonus let the action std
+        # balloon past 2.0 before the policy could find a coherent gait.
+        init_noise_std=0.6,
         actor_obs_normalization=False,
         critic_obs_normalization=False,
         actor_hidden_dims=[512, 256, 128],
@@ -25,7 +27,9 @@ class HV1VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,
+        # 0.003 (was 0.01). High entropy bonus was rewarding the policy for
+        # growing its action variance without ever committing to a gait.
+        entropy_coef=0.003,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-3,

@@ -202,8 +202,11 @@ class HV1RewardsCfg:
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.003)
 
     # ---- safety --------------------------------------------------------
-    is_alive = RewTerm(func=mdp.is_alive, weight=0.15)
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    # Smaller alive bonus so "stand still 20 s" isn't a sufficient strategy.
+    is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
+    # Bounded termination penalty — -200 was a value-loss blow-up risk
+    # once action_std grew and noisy rollouts hit fall states.
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-1.0,
@@ -243,9 +246,11 @@ class HV1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.terrain_levels = None
 
         # ---------------- commands: walk + stand mix ------------------------
-        # 25% of envs get a zero-velocity command (stand). The rest get
-        # a uniformly sampled walking velocity.
-        self.commands.base_velocity.rel_standing_envs = 0.25
+        # Only 5% of envs get a zero-velocity command. Keep some standing
+        # examples so the policy learns the cmd≈0 gating, but make walking
+        # the dominant training distribution — otherwise the policy finds a
+        # local optimum of "always stand and collect alive bonus".
+        self.commands.base_velocity.rel_standing_envs = 0.05
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)

@@ -1,15 +1,20 @@
-"""HV1.2 walking task on flat ground (Isaac Lab manager-based).
+"""HV1 unified standing + walking task on flat ground.
 
-Phase 2: policy controls ONLY the 12 leg joints. Upper body (3-DoF waist +
-14-DoF arms + 3-DoF head) is held at the default pose by the implicit-actuator
-PD, with targets re-asserted at every reset via custom event terms.
+A single env teaches both behaviors:
+  * `rel_standing_envs = 0.25` → 25% of envs get a zero velocity command and
+    must hold the default pose (gated by `stand_still_joint_deviation_l1`).
+  * The remaining 75% get a non-zero command and must walk to track it.
 
-Differences vs. hv1_2_stand:
-  * Non-zero velocity command ranges (forward 0..1 m/s, yaw ±1 rad/s).
-  * Feet-air-time and feet-slide rewards (foot contact sensor on ankle_roll_link).
-  * Stronger joint_deviation penalties on upper body to actively resist torque
-    feedback from leg swings.
-  * Larger action scale (0.5) so the policy has range to lift the feet.
+Policy controls only the 12 leg joints. Upper body (3-DoF waist + 14-DoF arms
++ 2-DoF neck) is pinned at default via PD with reset-time target events.
+
+Differences vs. the HV1.2 walking config (calibrated to HV1's actual geometry):
+  * `base_height_below.target_height`: 0.92 → 0.89 m  (HV1 spawns 3 cm lower)
+  * `feet_lateral_clearance.min_distance`: 0.18 → 0.30 m  (HV1 stance 1.84× wider)
+  * `flat_orientation_l2.weight`: -1.0 → -2.0  (HV1 torso is +70% heavier)
+  * `push_robot.velocity_range`: ±0.5 → ±0.3 m/s  (smaller impulses on top-heavy body)
+  * 2-DoF neck pin (yaw + pitch) instead of HV1.2's 3-DoF head.
+  * Added `stand_still_joint_deviation_l1` reward + `rel_standing_envs = 0.25`.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
     LocomotionVelocityRoughEnvCfg,
 )
 
-from isaaclab_assets import HV1_2_CFG  # isort: skip
+from isaaclab_assets import HV1_CFG  # isort: skip
 
 from . import mdp as custom_mdp
 
@@ -39,7 +44,7 @@ LEG_JOINTS = [
     "^(left|right)_ankle_(pitch|roll)_joint$",
 ]
 WAIST_JOINT_NAMES = ["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"]
-HEAD_JOINT_NAMES = ["head_pitch_joint", "head_roll_joint", "head_yaw_joint"]
+NECK_JOINT_NAMES = ["neck_yaw_joint", "neck_pitch_joint"]
 ARM_JOINT_NAMES = [
     "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
     "left_elbow_joint",
@@ -49,18 +54,18 @@ ARM_JOINT_NAMES = [
     "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
 ]
 
-# Default upper-body pose (matches HV1_2_CFG.init_state).
+# Default upper-body pose (matches HV1_CFG.init_state.joint_pos).
 WAIST_TARGETS = {n: (0.0, 0.0) for n in WAIST_JOINT_NAMES}
-HEAD_TARGETS = {n: (0.0, 0.0) for n in HEAD_JOINT_NAMES}
+NECK_TARGETS = {n: (0.0, 0.0) for n in NECK_JOINT_NAMES}
 ARM_TARGETS_PIN = {
-    "left_shoulder_pitch_joint": (0.4, 0.4),
+    "left_shoulder_pitch_joint": (0.3, 0.3),
     "left_shoulder_roll_joint":  (0.0, 0.0),
     "left_shoulder_yaw_joint":   (0.0, 0.0),
     "left_elbow_joint":          (0.3, 0.3),
     "left_wrist_roll_joint":     (0.0, 0.0),
     "left_wrist_pitch_joint":    (0.0, 0.0),
     "left_wrist_yaw_joint":      (0.0, 0.0),
-    "right_shoulder_pitch_joint": (0.4, 0.4),
+    "right_shoulder_pitch_joint": (0.3, 0.3),
     "right_shoulder_roll_joint":  (0.0, 0.0),
     "right_shoulder_yaw_joint":   (0.0, 0.0),
     "right_elbow_joint":          (0.3, 0.3),
@@ -71,9 +76,8 @@ ARM_TARGETS_PIN = {
 
 
 @configclass
-class HV1_2VelocityActionsCfg:
-    """Policy actions on legs only (12 of 32 joints), with a larger scale than
-    the standing task so it can actually lift its feet."""
+class HV1ActionsCfg:
+    """Policy acts on the 12 leg joints. Upper body is pinned via PD targets."""
 
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
@@ -84,7 +88,7 @@ class HV1_2VelocityActionsCfg:
 
 
 @configclass
-class HV1_2VelocityObservationsCfg:
+class HV1ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
@@ -103,9 +107,8 @@ class HV1_2VelocityObservationsCfg:
 
 
 @configclass
-class HV1_2VelocityEventCfg(EventCfg):
-    """Inherits velocity-task events and adds reset-time pinning for
-    waist / arms / head joints (since the policy no longer drives them)."""
+class HV1EventCfg(EventCfg):
+    """Inherits velocity-task events and pins waist / arms / neck at reset."""
 
     pin_waist_target_reset = EventTerm(
         func=custom_mdp.randomize_arm_joint_targets,
@@ -123,22 +126,24 @@ class HV1_2VelocityEventCfg(EventCfg):
             "asset_cfg": SceneEntityCfg("robot", joint_names=list(ARM_TARGETS_PIN.keys()), preserve_order=True),
         },
     )
-    pin_head_target_reset = EventTerm(
+    pin_neck_target_reset = EventTerm(
         func=custom_mdp.randomize_arm_joint_targets,
         mode="reset",
         params={
-            "position_range": HEAD_TARGETS,
-            "asset_cfg": SceneEntityCfg("robot", joint_names=HEAD_JOINT_NAMES, preserve_order=True),
+            "position_range": NECK_TARGETS,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=NECK_JOINT_NAMES, preserve_order=True),
         },
     )
 
 
 @configclass
-class HV1_2VelocityRewardsCfg:
-    """Velocity-tracking rewards (walking)."""
+class HV1RewardsCfg:
+    """Unified rewards: velocity tracking handles walking, stand_still handles
+    standing. Both share stability / safety penalties."""
 
-    # ---- tracking (restored to 1.0 — strong velocity command pulls the
-    #      robot forward, which is impossible while balancing on one leg) ----
+    # ---- velocity tracking ---------------------------------------------
+    # At zero command, exp(-||vel||^2) peaks when robot is stationary → also
+    # the "stand still" objective. No mode switch needed.
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
         weight=1.0,
@@ -149,24 +154,17 @@ class HV1_2VelocityRewardsCfg:
         weight=1.0,
         params={"command_name": "base_velocity", "std": 0.5},
     )
-    # ---- gait: switched from feet_air_time_positive_biped to the
-    # alternation-requiring `feet_air_time`. The "_positive_biped" variant
-    # paid the policy continuously during single-stance — so the policy
-    # learned a yoga-pose-and-step gait. The standard `feet_air_time`
-    # pays out ONLY at touchdown (`first_contact`), so a long held-up leg
-    # earns 0 until it actually steps down. Forces alternating steps.
+
+    # ---- gait (active only when ||cmd_xy|| > 0.1) ----------------------
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time,
+        func=mdp.feet_air_time_positive_biped,
         weight=1.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
-            "threshold": 0.3,  # lowered from 0.4: gives positive reward as
-                                # soon as the foot was in air > 0.3 s before
-                                # touchdown. Easier early-training signal.
+            "threshold": 0.4,
         },
     )
-    # Anti-shuffle — still strong: feet must lift, not slide.
     feet_slide = RewTerm(
         func=mdp.feet_slide,
         weight=-1.0,
@@ -175,28 +173,35 @@ class HV1_2VelocityRewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_roll_link"),
         },
     )
-    # ---- stability ----
+
+    # ---- stand-still (active only when ||cmd_xy|| < 0.06) --------------
+    # Penalizes leg joints deviating from default when commanded to stand.
+    stand_still_legs = RewTerm(
+        func=mdp.stand_still_joint_deviation_l1,
+        weight=-1.0,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINTS),
+        },
+    )
+
+    # ---- stability (always-on) -----------------------------------------
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
-    # One-sided L1 "no-squat" penalty: zero when pelvis is at or above 0.92 m,
-    # linear in shortfall below. L1 (vs the previous L2 at weight -50) avoids
-    # the value-function blow-up when a falling env hits shortfall ≈ 0.8 m.
-    #   normal walk at 0.93 → 0 penalty
-    #   crouch at 0.84    → shortfall 0.08, penalty -0.8 (bigger than tracking gain)
-    #   fall at 0.10      → shortfall 0.82, penalty -8.2 (large but bounded)
+    # HV1 torso is +70% heavier than HV1.2 → stronger tilt penalty.
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
+    # HV1 spawn 0.95 m; preserve 6 cm headroom → target 0.89 m.
     base_height_below = RewTerm(
         func=custom_mdp.base_height_below_target_l1,
         weight=-10.0,
-        params={"target_height": 0.92},
+        params={"target_height": 0.89},
     )
-    # ---- effort / smoothness ----
-    # Backed off from -0.005 — paired with the height-penalty rework, that
-    # was too many tight new constraints at once and PPO went chaotic.
-    # -0.003 is between original (-0.002) and the over-aggressive (-0.005).
+
+    # ---- effort / smoothness -------------------------------------------
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-5.0e-7)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.003)
-    # ---- safety ----
+
+    # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.15)
     termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
     dof_pos_limits = RewTerm(
@@ -204,19 +209,15 @@ class HV1_2VelocityRewardsCfg:
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_(pitch|roll)_joint$"])},
     )
-    # Penalize the OUTCOME (feet too close in yaw-frame Y) rather than the
-    # MEANS (hip deviation). Lets the policy use hip_roll freely for balance
-    # while strictly preventing leg crossing. One-sided: zero when clear.
+    # HV1 default sep 0.42 m → min_distance 0.30 m leaves 12 cm of compression room.
     feet_lateral_clearance = RewTerm(
         func=custom_mdp.feet_lateral_distance_clearance,
         weight=-10.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "min_distance": 0.18,  # ~half of standing 0.34 m separation
+            "min_distance": 0.30,
         },
     )
-    # Softer hip-deviation now that feet_lateral_clearance does the heavy
-    # lifting — kept at low weight as a secondary nudge.
     joint_deviation_hip = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.2,
@@ -225,39 +226,35 @@ class HV1_2VelocityRewardsCfg:
 
 
 @configclass
-class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
-    actions: HV1_2VelocityActionsCfg = HV1_2VelocityActionsCfg()
-    observations: HV1_2VelocityObservationsCfg = HV1_2VelocityObservationsCfg()
-    rewards: HV1_2VelocityRewardsCfg = HV1_2VelocityRewardsCfg()
-    events: HV1_2VelocityEventCfg = HV1_2VelocityEventCfg()
+class HV1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
+    actions: HV1ActionsCfg = HV1ActionsCfg()
+    observations: HV1ObservationsCfg = HV1ObservationsCfg()
+    rewards: HV1RewardsCfg = HV1RewardsCfg()
+    events: HV1EventCfg = HV1EventCfg()
 
     def __post_init__(self):
         super().__post_init__()
 
-        # ---------------- scene: flat plane, no height scanner ----------------
-        self.scene.robot = HV1_2_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        # ---------------- scene: flat plane, no height scanner --------------
+        self.scene.robot = HV1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.scene.terrain.terrain_type = "plane"
         self.scene.terrain.terrain_generator = None
         self.scene.height_scanner = None
         self.curriculum.terrain_levels = None
 
-        # ---------------- commands: walking ranges ---------------------------
+        # ---------------- commands: walk + stand mix ------------------------
+        # 25% of envs get a zero-velocity command (stand). The rest get
+        # a uniformly sampled walking velocity.
+        self.commands.base_velocity.rel_standing_envs = 0.25
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.ranges.heading = (-3.14, 3.14)
 
-        # ---------------- domain randomization on the base link --------------
-        # Parent points these at a body named "base" which doesn't exist on
-        # HV1.2 (root is "pelvis"). Re-target them and dial the ranges down
-        # to "small but useful" so the policy is robust across mass / COM
-        # variation without being asked to track an impossible target.
-
-        # ±3 kg around the 83 kg total — ≈ 3.6% body mass.
+        # ---------------- domain randomization on pelvis --------------------
         self.events.add_base_mass.params["asset_cfg"].body_names = "pelvis"
         self.events.add_base_mass.params["mass_distribution_params"] = (-3.0, 3.0)
 
-        # ±3 cm horizontal, ±1 cm vertical pelvis COM offset.
         self.events.base_com.params["asset_cfg"].body_names = "pelvis"
         self.events.base_com.params["com_range"] = {
             "x": (-0.03, 0.03),
@@ -265,14 +262,8 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
             "z": (-0.01, 0.01),
         }
 
-        # Re-target the reset-time external force/torque term (default ranges
-        # are 0/0, so this just keeps it from erroring out — push_robot does
-        # the actual mid-episode perturbation).
         self.events.base_external_force_torque.params["asset_cfg"].body_names = "pelvis"
 
-        # Widen ground friction randomization — single-bucket friction is too
-        # narrow for "stable across environments". Static 0.4..1.2 covers
-        # smooth indoor floor to grippy rubber; dynamic 0.3..1.0 similarly.
         self.events.physics_material.params["static_friction_range"] = (0.4, 1.2)
         self.events.physics_material.params["dynamic_friction_range"] = (0.3, 1.0)
 
@@ -284,27 +275,29 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0),
             },
         }
-        # push robot every 8-12 s for robustness
+        # Top-heavy body → gentler pushes than HV1.2 (±0.5 → ±0.3).
         self.events.push_robot.interval_range_s = (8.0, 12.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}
+        self.events.push_robot.params = {"velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}}
 
-        # ---------------- terminations: only "pelvis" contact -----------------
+        # ---------------- terminations --------------------------------------
         self.terminations.base_contact.params["sensor_cfg"].body_names = "pelvis"
 
-        # ---------------- runtime ---------------------------------------------
+        # ---------------- runtime -------------------------------------------
         self.episode_length_s = 20.0
-        self.decimation = 4  # policy at 50 Hz when sim.dt = 0.005
+        self.decimation = 4  # policy at 50 Hz with sim.dt = 0.005
 
 
 @configclass
-class HV1_2VelocityFlatEnvCfg_PLAY(HV1_2VelocityFlatEnvCfg):
+class HV1VelocityFlatEnvCfg_PLAY(HV1VelocityFlatEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50
         self.scene.env_spacing = 2.5
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None
-        # For inspection, hold the command at a steady forward walk.
+        # Inspect with a steady forward walk; toggle rel_standing_envs to see
+        # standing behavior.
+        self.commands.base_velocity.rel_standing_envs = 0.0
         self.commands.base_velocity.ranges.lin_vel_x = (0.5, 0.5)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)

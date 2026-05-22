@@ -9,12 +9,17 @@ Policy controls only the 12 leg joints. Upper body (3-DoF waist + 14-DoF arms
 + 2-DoF neck) is pinned at default via PD with reset-time target events.
 
 Differences vs. the HV1.2 walking config (calibrated to HV1's actual geometry):
+  * Foot-contact link: `*_ankle_pitch_link` (HV1) vs `*_ankle_roll_link` (HV1.2).
+    HV1's ankle chain is knee → ankle_roll → ankle_pitch (leaf), so ankle_pitch
+    is the foot proper. HV1.2's chain is inverted (knee → ankle_pitch → ankle_roll,
+    leaf), so ankle_roll is its foot. Targeting the wrong link makes
+    feet_air_time and feet_slide silently read zero.
   * `base_height_below.target_height`: 0.92 → 0.89 m  (HV1 spawns 3 cm lower)
   * `feet_lateral_clearance.min_distance`: 0.18 → 0.30 m  (HV1 stance 1.84× wider)
   * `flat_orientation_l2.weight`: -1.0 → -2.0  (HV1 torso is +70% heavier)
   * `push_robot.velocity_range`: ±0.5 → ±0.3 m/s  (smaller impulses on top-heavy body)
   * 2-DoF neck pin (yaw + pitch) instead of HV1.2's 3-DoF head.
-  * Added `stand_still_joint_deviation_l1` reward + `rel_standing_envs = 0.25`.
+  * Added `stand_still_joint_deviation_l1` reward + `rel_standing_envs = 0.05`.
 """
 
 from __future__ import annotations
@@ -161,7 +166,7 @@ class HV1RewardsCfg:
         weight=1.0,
         params={
             "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_pitch_link"),
             "threshold": 0.4,
         },
     )
@@ -169,8 +174,8 @@ class HV1RewardsCfg:
         func=mdp.feet_slide,
         weight=-1.0,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_roll_link"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_pitch_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_pitch_link"),
         },
     )
 
@@ -217,7 +222,7 @@ class HV1RewardsCfg:
         func=custom_mdp.feet_lateral_distance_clearance,
         weight=-10.0,
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_pitch_link"),
             "min_distance": 0.30,
         },
     )

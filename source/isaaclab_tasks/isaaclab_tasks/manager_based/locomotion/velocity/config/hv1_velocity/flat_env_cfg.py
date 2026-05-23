@@ -167,7 +167,7 @@ class HV1RewardsCfg:
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_pitch_link"),
-            "threshold": 0.4,
+            "threshold": 0.3,
         },
     )
     feet_slide = RewTerm(
@@ -256,8 +256,11 @@ class HV1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # the dominant training distribution — otherwise the policy finds a
         # local optimum of "always stand and collect alive bonus".
         self.commands.base_velocity.rel_standing_envs = 0.05
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        # Forward fast, backward at half-speed (biomechanically reasonable),
+        # moderate side-step. Phase 1 trained on (0..1) lin_x only — expand
+        # here and resume from the existing checkpoint to fine-tune.
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.5, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.ranges.heading = (-3.14, 3.14)
 

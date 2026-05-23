@@ -307,10 +307,22 @@ class HV1VelocityFlatEnvCfg_PLAY(HV1VelocityFlatEnvCfg):
         self.scene.num_envs = 50
         self.scene.env_spacing = 2.5
         self.observations.policy.enable_corruption = False
-        self.events.push_robot = None
-        # Inspect with a steady forward walk; toggle rel_standing_envs to see
-        # standing behavior.
-        self.commands.base_velocity.rel_standing_envs = 0.0
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.5)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
+
+        # ---- exercise every behavior the policy was trained on -----------
+        # 20% of envs hold a zero command (stand). The other 80% sample the
+        # full training command box, so across the 50 envs we see forward /
+        # backward / side-step / turn at the same time.
+        self.commands.base_velocity.rel_standing_envs = 0.20
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.5, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.4, 0.4)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        # Resample slower so each env holds one motion long enough to watch.
+        self.commands.base_velocity.resampling_time_range = (8.0, 8.0)
+
+        # ---- keep external pushes on for robustness inspection -----------
+        # A little larger than training to stress-test, not enough to topple
+        # a healthy policy.
+        self.events.push_robot.interval_range_s = (5.0, 8.0)
+        self.events.push_robot.params = {
+            "velocity_range": {"x": (-0.4, 0.4), "y": (-0.4, 0.4)}
+        }

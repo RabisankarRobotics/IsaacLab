@@ -186,6 +186,19 @@ class HV1LocoManipEnvCfg(HV1VelocityFlatEnvCfg):
             ),
         )
 
+        # Boost locomotion so EE rewards don't dominate it 2:1.
+        self.rewards.track_lin_vel_xy_exp.weight = 2.0
+        self.rewards.track_ang_vel_z_exp.weight = 2.0
+
+        # Soften EE tanh: wider sweet spot, lower peak → kills hand vibration.
+        self.rewards.left_ee_pos_tracking_fine.weight = 1.5
+        self.rewards.left_ee_pos_tracking_fine.params["std"] = 0.10
+        self.rewards.right_ee_pos_tracking_fine.weight = 1.5
+        self.rewards.right_ee_pos_tracking_fine.params["std"] = 0.10
+
+        # Wake feet back up — air-time reward only fires above threshold.
+        self.rewards.feet_air_time.params["threshold"] = 0.2
+
         # Slightly longer episode to give EE rewards time to accumulate
         # signal across multiple command samples.
         self.episode_length_s = 14.0

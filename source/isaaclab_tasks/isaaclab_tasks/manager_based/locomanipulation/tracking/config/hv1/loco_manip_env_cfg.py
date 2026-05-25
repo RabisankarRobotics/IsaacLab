@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -199,6 +200,40 @@ class HV1LocoManipEnvCfg(HV1VelocityFlatEnvCfg):
         # Wake feet back up — air-time reward only fires above threshold.
         self.rewards.feet_air_time.params["threshold"] = 0.2
 
+        # ---------------- Stage-4 upper-body domain randomization -----------
+        # Unitree G1/H1 pattern: ALL body-level DR on `torso_link`, none on
+        # pelvis. The upper body is where COM lives and where real disturbances
+        # actually act (chest pushes, drag, top-mounted equipment). Retargeting
+        # the inherited `base_*` events overrides the Stage-3 pelvis defaults.
+
+        # Mass: models battery / sensor / payload variance on the torso.
+        self.events.add_base_mass.params["asset_cfg"].body_names = "torso_link"
+        self.events.add_base_mass.params["mass_distribution_params"] = (-2.0, 2.0)
+
+        # COM: models uneven internal mass distribution of the torso.
+        self.events.base_com.params["asset_cfg"].body_names = "torso_link"
+        self.events.base_com.params["com_range"] = {
+            "x": (-0.02, 0.02), "y": (-0.02, 0.02), "z": (-0.02, 0.02),
+        }
+
+        # External wrench: sustained per-episode push/drag on the chest.
+        self.events.base_external_force_torque.params["asset_cfg"].body_names = "torso_link"
+        self.events.base_external_force_torque.params["force_range"] = (-5.0, 5.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-2.0, 2.0)
+
+        # Wrist payload mass: distinct from body DR — models grasped objects
+        # / gripper inertia. Critical for Stage 5 manipulation.
+        self.events.add_wrist_mass = EventTerm(
+            func=mdp.randomize_rigid_body_mass,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=[LEFT_EE_BODY, RIGHT_EE_BODY]),
+                "mass_distribution_params": (0.0, 0.5),
+                "operation": "add",
+                "distribution": "uniform",
+            },
+        )
+
         # Slightly longer episode to give EE rewards time to accumulate
         # signal across multiple command samples.
         self.episode_length_s = 14.0
@@ -223,8 +258,16 @@ class HV1LocoManipEnvCfg_PLAY(HV1LocoManipEnvCfg):
         self.commands.left_ee_pose.resampling_time_range = (4.0, 4.0)
         self.commands.right_ee_pose.resampling_time_range = (4.0, 4.0)
 
-        # Keep gentle pushes during play to stress-test loco-manip coordination.
-        self.events.push_robot.interval_range_s = (5.0, 8.0)
+        # Visible disturbances during play so external-force effect is obvious.
+        # push_robot = sudden velocity kick (visible as instant slide/sway).
+        self.events.push_robot.interval_range_s = (3.0, 5.0)
         self.events.push_robot.params = {
-            "velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}
+            "velocity_range": {"x": (-0.6, 0.6), "y": (-0.6, 0.6)}
         }
+
+        # Big sustained chest wrench per episode → robot visibly leans into it.
+        self.events.base_external_force_torque.params["force_range"] = (-5.0, 5.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-2.0, 2.0)
+
+        # Shorter episodes so resets (= new wrench sample) happen more often.
+        # self.episode_length_s = 8.0

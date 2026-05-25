@@ -171,13 +171,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     action_dim = unwrapped.action_manager.total_action_dim
 
     # observation — per-term dims
+    # Note: when concatenate_terms=True, `group_obs_dim` returns a single combined
+    # tuple. Use `group_obs_term_dim` for the always-per-term breakdown.
     obs_manager = unwrapped.observation_manager
     obs_group = "policy"
     obs_terms = OrderedDict()
-    for term_name, term_dim in zip(obs_manager.active_terms[obs_group], obs_manager.group_obs_dim[obs_group]):
-        # term_dim is a tuple like (3,) or (26,)
-        obs_terms[term_name] = int(term_dim[0]) if isinstance(term_dim, tuple) else int(term_dim)
-    total_obs_dim = sum(obs_terms.values())
+    active_term_names = obs_manager.active_terms[obs_group]
+    if hasattr(obs_manager, "group_obs_term_dim"):
+        per_term_dims = obs_manager.group_obs_term_dim[obs_group]
+    else:
+        per_term_dims = obs_manager.group_obs_dim[obs_group]
+    for term_name, term_dim in zip(active_term_names, per_term_dims):
+        obs_terms[term_name] = int(term_dim[0]) if isinstance(term_dim, (tuple, list)) else int(term_dim)
+    # Total: prefer manager's reported dim (handles concat correctly).
+    full_dim = obs_manager.group_obs_dim[obs_group]
+    if isinstance(full_dim, (tuple, list)) and len(full_dim) > 0:
+        total_obs_dim = int(full_dim[0]) if isinstance(full_dim[0], int) else int(full_dim[0][0])
+    else:
+        total_obs_dim = int(full_dim)
 
     # command terms (so the deploy runner can publish them)
     command_terms = []

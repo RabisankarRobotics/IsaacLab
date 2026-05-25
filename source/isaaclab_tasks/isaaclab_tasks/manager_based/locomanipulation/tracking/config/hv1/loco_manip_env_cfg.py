@@ -207,28 +207,32 @@ class HV1LocoManipEnvCfg(HV1VelocityFlatEnvCfg):
         # the inherited `base_*` events overrides the Stage-3 pelvis defaults.
 
         # Mass: models battery / sensor / payload variance on the torso.
+        # Softened ±2 → ±1 kg for resume-from-checkpoint stability.
         self.events.add_base_mass.params["asset_cfg"].body_names = "torso_link"
-        self.events.add_base_mass.params["mass_distribution_params"] = (-2.0, 2.0)
+        self.events.add_base_mass.params["mass_distribution_params"] = (-1.0, 1.0)
 
         # COM: models uneven internal mass distribution of the torso.
+        # Softened ±2 → ±1 cm (less destabilizing balance origin shift).
         self.events.base_com.params["asset_cfg"].body_names = "torso_link"
         self.events.base_com.params["com_range"] = {
-            "x": (-0.02, 0.02), "y": (-0.02, 0.02), "z": (-0.02, 0.02),
+            "x": (-0.01, 0.01), "y": (-0.01, 0.01), "z": (-0.01, 0.01),
         }
 
         # External wrench: sustained per-episode push/drag on the chest.
+        # Force already softened to ±5 N. Torque softened ±2 → ±1 Nm.
         self.events.base_external_force_torque.params["asset_cfg"].body_names = "torso_link"
         self.events.base_external_force_torque.params["force_range"] = (-5.0, 5.0)
-        self.events.base_external_force_torque.params["torque_range"] = (-2.0, 2.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-1.0, 1.0)
 
-        # Wrist payload mass: distinct from body DR — models grasped objects
-        # / gripper inertia. Critical for Stage 5 manipulation.
+        # Wrist payload mass: softened 0.5 → 0.2 kg. Keeps a small amount of
+        # payload variance for sim2real without destroying Stage-4 EE tracking.
+        # Bump back to 0.5 when starting Stage 5 (where payload is the point).
         self.events.add_wrist_mass = EventTerm(
             func=mdp.randomize_rigid_body_mass,
             mode="startup",
             params={
                 "asset_cfg": SceneEntityCfg("robot", body_names=[LEFT_EE_BODY, RIGHT_EE_BODY]),
-                "mass_distribution_params": (0.0, 0.5),
+                "mass_distribution_params": (0.0, 0.2),
                 "operation": "add",
                 "distribution": "uniform",
             },
@@ -267,7 +271,7 @@ class HV1LocoManipEnvCfg_PLAY(HV1LocoManipEnvCfg):
 
         # Big sustained chest wrench per episode → robot visibly leans into it.
         self.events.base_external_force_torque.params["force_range"] = (-5.0, 5.0)
-        self.events.base_external_force_torque.params["torque_range"] = (-2.0, 2.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-1.0, 1.0)
 
         # Shorter episodes so resets (= new wrench sample) happen more often.
         # self.episode_length_s = 8.0

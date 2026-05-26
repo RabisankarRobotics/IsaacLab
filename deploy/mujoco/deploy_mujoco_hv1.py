@@ -177,27 +177,31 @@ def set_default_pose(
 
 def build_observation(
     d: mujoco.MjData,
-    mj_to_isaac: np.ndarray,
+    isaac_to_mj: np.ndarray,
     q_default_isaac: np.ndarray,
     last_action: np.ndarray,
     vel_cmd: np.ndarray,
     left_ee_cmd: np.ndarray,
     right_ee_cmd: np.ndarray,
 ) -> np.ndarray:
-    # base state — MuJoCo gives qvel in WORLD frame for the free joint
+    # base state — MuJoCo freejoint convention:
+    #   qvel[0:3]  linear velocity in WORLD frame    → rotate into body frame
+    #   qvel[3:6]  angular velocity in BODY frame    → use directly (do NOT rotate)
+    # Isaac Lab's `base_lin_vel` and `base_ang_vel` observations are both in
+    # body frame (root_lin_vel_b / root_ang_vel_b), so matching that here.
     base_quat = d.qpos[3:7].astype(np.float32).copy()    # (w, x, y, z)
     lin_vel_w = d.qvel[0:3].astype(np.float32)
-    ang_vel_w = d.qvel[3:6].astype(np.float32)
-
     lin_vel_b = quat_rotate_inverse(base_quat, lin_vel_w)
-    ang_vel_b = quat_rotate_inverse(base_quat, ang_vel_w)
+    ang_vel_b = d.qvel[3:6].astype(np.float32).copy()
     grav_b = projected_gravity(base_quat)
 
-    # joints in Isaac order
+    # Joints: convert from MJ order to Isaac order.
+    # isaac_to_mj[i] = MJ index of the joint that lives at Isaac index i.
+    # So q_isaac[i] = q_mj[isaac_to_mj[i]] = q_mj[isaac_to_mj].
     q_mj = d.qpos[7:].astype(np.float32)
     dq_mj = d.qvel[6:].astype(np.float32)
-    q_isaac = q_mj[mj_to_isaac]
-    dq_isaac = dq_mj[mj_to_isaac]
+    q_isaac = q_mj[isaac_to_mj]
+    dq_isaac = dq_mj[isaac_to_mj]
     joint_pos_rel = q_isaac - q_default_isaac
 
     obs = np.concatenate(
@@ -382,7 +386,7 @@ def main():
             if counter % decimation == 0:
                 obs = build_observation(
                     d=d,
-                    mj_to_isaac=mj_to_isaac,
+                    isaac_to_mj=isaac_to_mj,
                     q_default_isaac=q_default_isaac,
                     last_action=last_action_isaac_order,
                     vel_cmd=vel_cmd,

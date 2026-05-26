@@ -4,9 +4,15 @@
   <option timestep="0.005" iterations="50" solver="Newton" gravity="0 0 -9.81"/>
 
   <!-- Default joint properties — adds damping + armature so joints don't
-       free-oscillate under gravity when no torque is applied. -->
+       free-oscillate under gravity when no torque is applied.
+       Geom default: contype=1, conaffinity=0 so robot bodies collide with the
+       world floor (which has the default contype=1/conaffinity=1) but NOT with
+       each other. Self-collision between mesh-vs-mesh bodies on a 31-DoF tree
+       is the #1 source of MuJoCo physics blow-ups (NaN qpos → invisible robot
+       flicker in viewer) and is disabled in Isaac training too. -->
   <default>
     <joint damping="1.0" armature="0.01" frictionloss="0.1"/>
+    <geom contype="1" conaffinity="0"/>
   </default>
 
   <asset>

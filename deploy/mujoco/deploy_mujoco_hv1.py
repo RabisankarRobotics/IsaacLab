@@ -122,29 +122,42 @@ def set_default_pose(
     d: mujoco.MjData,
     q_default_isaac: np.ndarray,
     isaac_to_mj: np.ndarray,
-    base_height: float,
+    base_height: float | None,
 ) -> None:
-    """Place robot in standing pose at given base height.
+    """Place robot in standing pose.
+
+    Preferred path: load the "home" keyframe from the MJCF (clears all internal
+    buffers, sets a known-good qpos that matches the Isaac default pose).
+
+    Fallback path: zero qpos/qvel, set base xyz+quat manually, write joint pos
+    in MuJoCo order. Used only if the MJCF has no keyframe.
 
     qpos layout (with free joint): [x, y, z, qw, qx, qy, qz, joint_0, joint_1, ...]
-    The 7 elements after position+quat are MuJoCo joint order.
+    The 31 elements after position+quat are MuJoCo joint order.
     """
-    d.qpos[:] = 0.0
-    d.qvel[:] = 0.0
-    # base position
-    d.qpos[0] = 0.0
-    d.qpos[1] = 0.0
-    d.qpos[2] = base_height
-    # base quaternion (identity)
-    d.qpos[3] = 1.0
-    d.qpos[4] = 0.0
-    d.qpos[5] = 0.0
-    d.qpos[6] = 0.0
-    # joint positions in MuJoCo order
-    q_default_mj = q_default_isaac[np.argsort(isaac_to_mj)]
-    # equivalent: q_default_mj[j] = q_default_isaac[isaac_idx_of(mj_joint_names[j])]
-    # but argsort approach is cleaner: argsort(isaac_to_mj) gives mj_to_isaac
-    d.qpos[7 : 7 + len(q_default_mj)] = q_default_mj
+    # Always reset data first — clears qvel, qacc, contact buffers, etc.
+    mujoco.mj_resetData(m, d)
+
+    use_keyframe = m.nkey > 0
+    if use_keyframe:
+        # Load qpos from the "home" keyframe baked into hv1.xml. This matches
+        # the Isaac default joint pose by construction; just override base z
+        # if the user asked for a different height.
+        mujoco.mj_resetDataKeyframe(m, d, 0)
+        if base_height is not None:
+            d.qpos[2] = base_height
+        print(f"[deploy] init pose: keyframe 0 loaded, base z = {d.qpos[2]:.3f}")
+    else:
+        # Fallback: build qpos from YAML default.
+        d.qpos[:] = 0.0
+        d.qvel[:] = 0.0
+        d.qpos[2] = base_height if base_height is not None else 0.95
+        d.qpos[3] = 1.0
+        # argsort(isaac_to_mj) == mj_to_isaac (inverse permutation)
+        q_default_mj = q_default_isaac[np.argsort(isaac_to_mj)]
+        d.qpos[7 : 7 + len(q_default_mj)] = q_default_mj
+        print(f"[deploy] init pose: built from YAML, base z = {d.qpos[2]:.3f}")
+
     mujoco.mj_forward(m, d)
 
 
@@ -213,7 +226,12 @@ def main():
     parser.add_argument("--policy", type=str, default=None, help="Override policy.pt path (default: from YAML).")
     parser.add_argument("--urdf", type=str, default=None, help="Override URDF path (default: from YAML).")
     parser.add_argument("--duration", type=float, default=120.0, help="Simulation duration in seconds.")
-    parser.add_argument("--base_height", type=float, default=0.95, help="Initial base height (m).")
+    parser.add_argument(
+        "--base_height",
+        type=float,
+        default=None,
+        help="Override initial base height (m). Default: use 'home' keyframe from MJCF.",
+    )
     # commands
     parser.add_argument("--cmd_lin_x", type=float, default=0.0)
     parser.add_argument("--cmd_lin_y", type=float, default=0.0)
@@ -283,12 +301,40 @@ def main():
     kd_mj = kd_isaac[mj_to_isaac]
     q_default_mj = q_default_isaac[mj_to_isaac]
 
+    # ---- Torque limits from MJCF actuator force range ---------------------
+    # Each motor in hv1.xml has ctrlrange="-X X" (X = joint motor's hard limit).
+    # We use these to clamp tau before writing to qfrc_applied — without this,
+    # a single large PD error can produce kilonewton-meter torques and blow up
+    # the simulator (NaN qpos → invisible robot in viewer).
+    tau_limit_mj = np.zeros(n_dof, dtype=np.float32)
+    for j_mj, name in enumerate(mj_joint_names):
+        # find actuator that drives this joint
+        for a in range(m.nu):
+            if m.actuator_trnid[a, 0] == mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name):
+                lo, hi = m.actuator_ctrlrange[a]
+                tau_limit_mj[j_mj] = max(abs(lo), abs(hi))
+                break
+        else:
+            # no actuator → unbounded (shouldn't happen for HV1 — 31/31 covered)
+            tau_limit_mj[j_mj] = 1e6
+
+    print(f"[deploy] torque clamps  : min={tau_limit_mj.min():.1f}  max={tau_limit_mj.max():.1f} Nm")
+
     # ---- Load policy ------------------------------------------------------
     policy = torch.jit.load(policy_path, map_location="cpu").eval()
     print(f"[deploy] policy loaded ({sum(p.numel() for p in policy.parameters()):,} params)")
 
     # ---- Initial state ----------------------------------------------------
     set_default_pose(m, d, q_default_isaac, isaac_to_mj, args.base_height)
+
+    # Sanity-check the initial pose: warn if the lowest geom is below z=0 (foot
+    # in ground → contact explosion on first step).
+    lowest_z = float("inf")
+    for g in range(m.ngeom):
+        if m.geom_bodyid[g] == 0:
+            continue  # skip world geoms (floor, etc.)
+        lowest_z = min(lowest_z, float(d.geom_xpos[g, 2]))
+    print(f"[deploy] init lowest geom z = {lowest_z:.4f}  (negative ⇒ ground penetration)")
 
     # state buffers
     last_action_isaac_order = np.zeros(action_dim, dtype=np.float32)
@@ -315,11 +361,22 @@ def main():
             q_mj = d.qpos[7:]
             dq_mj = d.qvel[6:]
             tau = kp_mj * (target_dof_pos_mj - q_mj) - kd_mj * dq_mj
-            # No actuator block in URDF — write joint torques directly
+            # Clamp to per-joint actuator torque limits — prevents blow-up
+            tau = np.clip(tau, -tau_limit_mj, tau_limit_mj)
+            # Write joint torques. qfrc_applied is in qvel layout: [6 free dofs, 31 joints]
             d.qfrc_applied[6:] = tau
 
             mujoco.mj_step(m, d)
             counter += 1
+
+            # ---- NaN guard ---------------------------------------------------
+            # Mesh self-collisions or extreme torques can drive qpos to NaN,
+            # which renders as the robot disappearing in the viewer. Catch it.
+            if not np.all(np.isfinite(d.qpos)):
+                print(f"[deploy] !! qpos went NaN at step {counter} — stopping.")
+                print(f"[deploy]    base z just before NaN: {d.qpos[2]:.4f}")
+                print(f"[deploy]    last tau abs max: {np.abs(tau).max():.2f}")
+                break
 
             # ---- Policy every `decimation` steps ----
             if counter % decimation == 0:
@@ -349,6 +406,15 @@ def main():
                     target_dof_pos_isaac[action_to_isaac] = action_scale * action_isaac
                 # Convert to MuJoCo order for PD law
                 target_dof_pos_mj = target_dof_pos_isaac[mj_to_isaac]
+
+                # Periodic heartbeat so the user can see policy is running.
+                policy_steps = counter // decimation
+                if policy_steps % 50 == 1:  # every ~1s at 50 Hz policy
+                    print(
+                        f"[deploy] t={d.time:6.2f}s  base_z={d.qpos[2]:.3f}  "
+                        f"|action|={np.abs(action_isaac).max():.2f}  "
+                        f"|tau|={np.abs(tau).max():.1f}"
+                    )
 
             viewer.sync()
 

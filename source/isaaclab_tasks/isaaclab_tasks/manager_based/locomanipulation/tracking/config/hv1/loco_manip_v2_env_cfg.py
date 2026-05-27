@@ -137,14 +137,19 @@ class HV1LocoManipV2RewardsCfg(HV1LocoManipRewardsCfg):
     # Split the waist penalty: yaw is the cheat lever (whole upper body spins
     # for free yaw tracking), roll/pitch are mildly useful for reach.
     # Earlier V2 run had a single -0.1 term — too weak vs +2.0 track_ang_vel_z.
+    # First run (weights -1.0 / -0.3 / -1.5 / -0.05) NaN'd at iter 790: fall
+    # rate jumped to 52% because the policy lost waist+torso as recovery DoFs
+    # before learning leg-only balance, value targets swung wildly, value head
+    # exploded. Halving the new weights so the policy can still partially use
+    # waist/torso during exploration. Bump back up later if needed.
     joint_deviation_waist_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1.0,
+        weight=-0.5,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["waist_yaw_joint"])},
     )
     joint_deviation_waist_rp = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.3,
+        weight=-0.15,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot", joint_names=["waist_roll_joint", "waist_pitch_joint"]
@@ -154,11 +159,9 @@ class HV1LocoManipV2RewardsCfg(HV1LocoManipRewardsCfg):
     # Built-in flat_orientation_l2 / ang_vel_xy_l2 read pelvis only. With the
     # waist now actuated the torso is decoupled and can pitch back to "swing"
     # the arms toward high EE targets — this term constrains that.
-    # Weight is intentionally just under the pelvis flat_orientation (-2.0) so
-    # the pelvis remains the priority when the two conflict.
     torso_flat_orientation = RewTerm(
         func=custom_mdp.flat_orientation_l2_body,
-        weight=-1.5,
+        weight=-0.8,
         params={"asset_cfg": SceneEntityCfg("robot", body_names=TORSO_BODY)},
     )
     torso_ang_vel_xy = RewTerm(

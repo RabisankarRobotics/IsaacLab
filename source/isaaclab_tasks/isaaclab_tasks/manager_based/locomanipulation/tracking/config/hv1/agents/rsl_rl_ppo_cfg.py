@@ -35,3 +35,17 @@ class HV1LocoManipPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class HV1LocoManipV2PPORunnerCfg(HV1LocoManipPPORunnerCfg):
+    """Stage-5 runner: asymmetric actor-critic.
+
+    The V2 env exposes two observation groups (`policy`, `critic`);
+    `obs_groups` tells RSL-RL which one feeds the actor and which feeds
+    the critic. Without this mapping, RSL-RL would fall back to feeding
+    `policy` to both, defeating the asymmetric setup.
+    """
+
+    experiment_name = "hv1_locomanip_v2_flat"
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}

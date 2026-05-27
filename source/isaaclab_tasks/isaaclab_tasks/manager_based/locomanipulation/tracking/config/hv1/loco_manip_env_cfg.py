@@ -221,8 +221,8 @@ class HV1LocoManipEnvCfg(HV1VelocityFlatEnvCfg):
         # External wrench: sustained per-episode push/drag on the chest.
         # Force already softened to ±5 N. Torque softened ±2 → ±1 Nm.
         self.events.base_external_force_torque.params["asset_cfg"].body_names = "torso_link"
-        self.events.base_external_force_torque.params["force_range"] = (-5.0, 5.0)
-        self.events.base_external_force_torque.params["torque_range"] = (-1.0, 1.0)
+        self.events.base_external_force_torque.params["force_range"] = (-3.0, 3.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-2.0, 2.0)
 
         # Wrist payload mass: softened 0.5 → 0.2 kg. Keeps a small amount of
         # payload variance for sim2real without destroying Stage-4 EE tracking.

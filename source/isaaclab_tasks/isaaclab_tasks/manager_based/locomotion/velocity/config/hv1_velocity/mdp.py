@@ -47,6 +47,38 @@ def feet_lateral_distance_clearance(
     return torch.clamp(min_distance - lateral_distance, min=0.0)
 
 
+def projected_gravity_body(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Gravity unit vector projected into the specified body's link frame.
+
+    Mirrors `mdp.projected_gravity` (which reads root only) but for an
+    arbitrary body. `asset_cfg.body_ids` must resolve to exactly one body.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_ids = asset_cfg.body_ids
+    body_idx = body_ids[0] if not isinstance(body_ids, int) else body_ids
+    body_quat = asset.data.body_link_quat_w[:, body_idx]
+    return quat_apply_inverse(body_quat, asset.data.GRAVITY_VEC_W)
+
+
+def body_ang_vel_b(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Angular velocity of a body expressed in its own link frame.
+
+    `asset_cfg.body_ids` must resolve to exactly one body.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_ids = asset_cfg.body_ids
+    body_idx = body_ids[0] if not isinstance(body_ids, int) else body_ids
+    body_quat = asset.data.body_link_quat_w[:, body_idx]
+    body_ang_vel_w = asset.data.body_link_ang_vel_w[:, body_idx]
+    return quat_apply_inverse(body_quat, body_ang_vel_w)
+
+
 def randomize_arm_joint_targets(
     env: "ManagerBasedRLEnv",
     env_ids: torch.Tensor,

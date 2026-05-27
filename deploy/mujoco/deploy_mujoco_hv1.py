@@ -228,7 +228,7 @@ def main():
     parser = argparse.ArgumentParser(description="Deploy HV1 loco-manip policy in MuJoCo.")
     parser.add_argument("--config", type=str, required=True, help="Path to mujoco_config.yaml")
     parser.add_argument("--policy", type=str, default=None, help="Override policy.pt path (default: from YAML).")
-    parser.add_argument("--urdf", type=str, default=None, help="Override URDF path (default: from YAML).")
+    parser.add_argument("--xml", type=str, default=None, help="Override MJCF/XML path (default: from YAML).")
     parser.add_argument("--duration", type=float, default=120.0, help="Simulation duration in seconds.")
     parser.add_argument(
         "--base_height",
@@ -261,7 +261,7 @@ def main():
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
 
-    urdf_path = args.urdf or cfg["robot"]["urdf_path"]
+    xml_path = args.xml or cfg["robot"]["xml_path"]
     policy_path = args.policy or cfg["policy"]["jit_path"]
 
     sim_dt = float(cfg["control"]["sim_dt"])
@@ -278,14 +278,14 @@ def main():
     action_dim = int(cfg["action"]["dim"])
 
     print(f"[deploy] config        : {args.config}")
-    print(f"[deploy] urdf          : {urdf_path}")
+    print(f"[deploy] xml           : {xml_path}")
     print(f"[deploy] policy        : {policy_path}")
     print(f"[deploy] sim_dt        : {sim_dt}  decimation={decimation}  policy_dt={sim_dt*decimation}")
     print(f"[deploy] n_dof_total   : {n_dof}    action_dim={action_dim}")
     print(f"[deploy] action_scale  : {action_scale}    use_default_offset={use_default_offset}")
 
     # ---- Load MuJoCo model ------------------------------------------------
-    m = mujoco.MjModel.from_xml_path(urdf_path)
+    m = mujoco.MjModel.from_xml_path(xml_path)
     d = mujoco.MjData(m)
     m.opt.timestep = sim_dt
 

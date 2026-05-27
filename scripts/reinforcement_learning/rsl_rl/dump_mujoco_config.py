@@ -88,8 +88,13 @@ def _to_pylist(t):
     return list(t)
 
 
-def _resolve_urdf_path(robot_cfg):
-    """Pull URDF path out of the articulation cfg (UrdfFileCfg)."""
+def _resolve_xml_path(robot_cfg):
+    """Pull the source asset path out of the articulation cfg.
+
+    Note: this is whatever Isaac used to spawn the robot (USD / URDF). The
+    MuJoCo deploy runner needs an MJCF instead, so the user typically
+    overrides this value in the YAML to point at their `scene.xml`.
+    """
     try:
         return robot_cfg.spawn.asset_path
     except AttributeError:
@@ -198,8 +203,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
             cmd_dim = int(cterm.command.shape[-1])
             command_terms.append({"name": cname, "dim": cmd_dim})
 
-    # robot asset path (URDF)
-    urdf_path = _resolve_urdf_path(robot.cfg)
+    # robot asset path — Isaac's spawn source. User overrides to MJCF/XML
+    # in the deploy YAML before running MuJoCo.
+    xml_path = _resolve_xml_path(robot.cfg)
 
     # exported policy path (play.py writes here; we mirror the location)
     exported_dir = os.path.join(run_dir, "exported")
@@ -225,7 +231,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
             "checkpoint": resume_path,
         },
         "robot": {
-            "urdf_path": urdf_path,
+            "xml_path": xml_path,
             "num_dof_total": len(joint_names_isaac),
             # CRITICAL: this is the order Isaac uses for joint_pos/joint_vel observations
             "joint_names_isaac_order": joint_names_isaac,
@@ -286,7 +292,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     print(f"  task                : {task_name}")
     print(f"  checkpoint          : {resume_path}")
     print(f"  policy (will export): {policy_path}")
-    print(f"  urdf_path           : {urdf_path}")
+    print(f"  xml_path            : {xml_path}")
     print(f"  sim_dt              : {sim_dt}  (policy_dt = {policy_dt})")
     print(f"  decimation          : {decimation}")
     print(f"  num_dof_total       : {len(joint_names_isaac)}")

@@ -8,9 +8,10 @@ Changes vs HV1LocoManipEnvCfg (V1):
     so the policy can see what waist actuation does to the upper body).
   * Critic obs: keep everything the actor has + privileged `base_lin_vel`
     (asymmetric actor-critic). Mapped via `obs_groups` in the runner cfg.
-  * Reward: add `joint_deviation_waist` to discourage the policy from
-    cheating EE tracking by twisting the waist instead of stepping
-    (mirrors the existing `joint_deviation_hip` term).
+  * Reward: split waist deviation into yaw (hard penalty) + roll/pitch
+    (mild), and add torso-frame `flat_orientation_l2` + `ang_vel_xy_l2`
+    so the upper body stays upright once the waist is actuated (the
+    built-in versions read the pelvis only).
   * Event: drop `pin_waist_target_reset` since the waist is now actuated.
 
 DR, command ranges, and all other rewards are kept identical to V1 so this
@@ -130,15 +131,40 @@ class HV1LocoManipV2ObservationsCfg:
     critic: CriticCfg = CriticCfg()
 
 
-# ---- rewards: V1 + waist deviation ---------------------------------------
+# ---- rewards: V1 + waist + torso shaping ---------------------------------
 @configclass
 class HV1LocoManipV2RewardsCfg(HV1LocoManipRewardsCfg):
-    # Discourages waist-twist cheating of EE tracking. Mirrors the existing
-    # `joint_deviation_hip` term (same function, same weight magnitude).
-    joint_deviation_waist = RewTerm(
+    # Split the waist penalty: yaw is the cheat lever (whole upper body spins
+    # for free yaw tracking), roll/pitch are mildly useful for reach.
+    # Earlier V2 run had a single -0.1 term — too weak vs +2.0 track_ang_vel_z.
+    joint_deviation_waist_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=WAIST_JOINT_NAMES)},
+        weight=-1.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["waist_yaw_joint"])},
+    )
+    joint_deviation_waist_rp = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.3,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=["waist_roll_joint", "waist_pitch_joint"]
+            )
+        },
+    )
+    # Built-in flat_orientation_l2 / ang_vel_xy_l2 read pelvis only. With the
+    # waist now actuated the torso is decoupled and can pitch back to "swing"
+    # the arms toward high EE targets — this term constrains that.
+    # Weight is intentionally just under the pelvis flat_orientation (-2.0) so
+    # the pelvis remains the priority when the two conflict.
+    torso_flat_orientation = RewTerm(
+        func=custom_mdp.flat_orientation_l2_body,
+        weight=-1.5,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=TORSO_BODY)},
+    )
+    torso_ang_vel_xy = RewTerm(
+        func=custom_mdp.body_ang_vel_xy_l2,
+        weight=-0.05,
+        params={"asset_cfg": SceneEntityCfg("robot", body_names=TORSO_BODY)},
     )
 
 

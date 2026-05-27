@@ -79,6 +79,39 @@ def body_ang_vel_b(
     return quat_apply_inverse(body_quat, body_ang_vel_w)
 
 
+def flat_orientation_l2_body(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L2 of the body-frame gravity xy components for a given link.
+
+    Mirrors `mdp.flat_orientation_l2` (root only) but for an arbitrary body —
+    used to keep the torso flat once the waist is policy-controlled.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_ids = asset_cfg.body_ids
+    body_idx = body_ids[0] if not isinstance(body_ids, int) else body_ids
+    body_quat = asset.data.body_link_quat_w[:, body_idx]
+    g_b = quat_apply_inverse(body_quat, asset.data.GRAVITY_VEC_W)
+    return torch.sum(torch.square(g_b[:, :2]), dim=1)
+
+
+def body_ang_vel_xy_l2(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L2 of the body-frame xy angular velocity for a given link.
+
+    Mirrors `mdp.ang_vel_xy_l2` (root only) but for an arbitrary body.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_ids = asset_cfg.body_ids
+    body_idx = body_ids[0] if not isinstance(body_ids, int) else body_ids
+    body_quat = asset.data.body_link_quat_w[:, body_idx]
+    w_b = quat_apply_inverse(body_quat, asset.data.body_link_ang_vel_w[:, body_idx])
+    return torch.sum(torch.square(w_b[:, :2]), dim=1)
+
+
 def randomize_arm_joint_targets(
     env: "ManagerBasedRLEnv",
     env_ids: torch.Tensor,

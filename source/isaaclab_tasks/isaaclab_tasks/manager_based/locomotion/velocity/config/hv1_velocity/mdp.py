@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import MISSING
 from typing import TYPE_CHECKING
 
 import torch
 
 from isaaclab.assets import Articulation
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import CommandTerm, CommandTermCfg, SceneEntityCfg
+from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
@@ -110,6 +113,106 @@ def body_ang_vel_xy_l2(
     body_quat = asset.data.body_link_quat_w[:, body_idx]
     w_b = quat_apply_inverse(body_quat, asset.data.body_link_ang_vel_w[:, body_idx])
     return torch.sum(torch.square(w_b[:, :2]), dim=1)
+
+
+# =============================================================================
+# V3 additions — scalar commands (body height, waist regularization α_t),
+# body-height tracking reward, and α-weighted waist-deviation reward.
+# =============================================================================
+
+
+class UniformScalarCommand(CommandTerm):
+    """Per-env scalar command sampled uniformly from a (lo, hi) range.
+
+    Either linear-uniform (default) or log-uniform (sample in log10 space then
+    exponentiate — useful for the waist regularization weight α_t ∈ [0.1, 10]).
+    """
+
+    cfg: "UniformScalarCommandCfg"
+
+    def __init__(self, cfg: "UniformScalarCommandCfg", env: "ManagerBasedRLEnv"):
+        super().__init__(cfg, env)
+        self._command = torch.zeros(self.num_envs, 1, device=self.device)
+
+    @property
+    def command(self) -> torch.Tensor:
+        return self._command
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        lo, hi = self.cfg.range
+        if self.cfg.log_uniform:
+            import math
+            log_lo = math.log10(lo)
+            log_hi = math.log10(hi)
+            u = torch.empty(len(env_ids), 1, device=self.device).uniform_(log_lo, log_hi)
+            self._command[env_ids] = torch.pow(10.0, u)
+        else:
+            self._command[env_ids] = torch.empty(
+                len(env_ids), 1, device=self.device
+            ).uniform_(lo, hi)
+
+    def _update_command(self):
+        pass
+
+    def _update_metrics(self):
+        pass
+
+
+@configclass
+class UniformScalarCommandCfg(CommandTermCfg):
+    """Cfg for a per-episode scalar command sampled uniformly (or log-uniformly).
+
+    Used in V3 for the body-height target h^des and waist-regularization α_t.
+    """
+
+    class_type: type = UniformScalarCommand
+    range: tuple[float, float] = MISSING
+    log_uniform: bool = False
+
+
+def base_height_tracking_exp(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    std: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward for tracking a body-height command via exp(-err² / std²).
+
+    Reads the commanded height from `command_name` (a UniformScalarCommand,
+    so shape (N, 1)). Compares against `root_pos_w[:, 2]` (world-z of the
+    pelvis since HV1 spawns on flat terrain).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    target = env.command_manager.get_command(command_name).squeeze(-1)
+    err_sq = torch.square(asset.data.root_pos_w[:, 2] - target)
+    return torch.exp(-err_sq / (std ** 2))
+
+
+def joint_deviation_l1_alpha_weighted(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L1 joint-position deviation from default, scaled by per-env α_t command.
+
+    Used in V3 to make the waist regularization weight a sampled command rather
+    than a fixed reward weight. The reward weight in the RewTerm should be -1.0
+    (or similar); the per-env α_t in `command_name` modulates the strength.
+
+    α_t is sampled per episode from a log-uniform [0.1, 10] range, so the
+    effective per-episode penalty spans two decades. The policy gets α_t as an
+    observation so it can adapt its waist usage.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    alpha = env.command_manager.get_command(command_name).squeeze(-1)  # (N,)
+    joint_dev = torch.sum(
+        torch.abs(
+            asset.data.joint_pos[:, asset_cfg.joint_ids]
+            - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+        ),
+        dim=-1,
+    )
+    return alpha * joint_dev
 
 
 def randomize_arm_joint_targets(

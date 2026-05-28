@@ -44,3 +44,24 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV2PPORunnerCfg",
     },
 )
+
+# V3 (HiWET Stage-1 robustification): obs history + body_height + α_t commands.
+gym.register(
+    id="Isaac-Tracking-LocoManipV3-HV1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_v3_env_cfg:HV1LocoManipV3EnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV3PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Tracking-LocoManipV3-HV1-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_v3_env_cfg:HV1LocoManipV3EnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV3PPORunnerCfg",
+    },
+)

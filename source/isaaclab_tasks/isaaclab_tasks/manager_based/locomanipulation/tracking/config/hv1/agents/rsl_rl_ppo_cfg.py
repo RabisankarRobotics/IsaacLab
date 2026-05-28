@@ -49,3 +49,18 @@ class HV1LocoManipV2PPORunnerCfg(HV1LocoManipPPORunnerCfg):
 
     experiment_name = "hv1_locomanip_v2_flat"
     obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+
+
+@configclass
+class HV1LocoManipV3PPORunnerCfg(HV1LocoManipV2PPORunnerCfg):
+    """V3 (HiWET Stage-1 robustification) — same PPO knobs as V2.
+
+    The architectural changes are in the env config: observation history
+    on the policy group (history_length=5, auto-flattened) and two new scalar
+    commands (body_height, waist_regularization). No custom ActorCritic
+    needed — RSL-RL sees the wider flat observation tensor and the MLP
+    handles it.
+    """
+
+    experiment_name = "hv1_locomanip_v3_flat"
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}

@@ -1,18 +1,18 @@
 """HV1 V2 body-frame loco-manipulation task (Stage 5).
 
 Changes vs HV1LocoManipEnvCfg (V1):
-  * Action: 26 → 29  (legs + arms + waist; waist_yaw / waist_roll / waist_pitch
-    are now policy-controlled; neck stays pinned).
+  * Action: 26 → 28  (legs + arms + waist_roll + waist_pitch; waist_yaw stays
+    PD-pinned because the first V2-actuated run showed it drifting ~5° and
+    causing visible pelvis jerk as the robot tried to keep yaw at zero).
   * Actor obs: drop `base_lin_vel` (not measurable from a single IMU on the
     real robot), add `projected_gravity_torso` + `torso_ang_vel` (torso IMU
     so the policy can see what waist actuation does to the upper body).
   * Critic obs: keep everything the actor has + privileged `base_lin_vel`
     (asymmetric actor-critic). Mapped via `obs_groups` in the runner cfg.
-  * Reward: split waist deviation into yaw (hard penalty) + roll/pitch
-    (mild), and add torso-frame `flat_orientation_l2` + `ang_vel_xy_l2`
-    so the upper body stays upright once the waist is actuated (the
-    built-in versions read the pelvis only).
-  * Event: drop `pin_waist_target_reset` since the waist is now actuated.
+  * Reward: `joint_deviation_waist_rp` (mild) + torso-frame
+    `flat_orientation_l2` + `ang_vel_xy_l2` so the upper body stays upright
+    once the waist is actuated (built-in versions read the pelvis only).
+  * Event: narrow `pin_waist_target_reset` to waist_yaw only.
 
 DR, command ranges, and all other rewards are kept identical to V1 so this
 run isolates the effect of the obs+action change.
@@ -31,7 +31,6 @@ from isaaclab_tasks.manager_based.locomotion.velocity.config.hv1_velocity import
 from isaaclab_tasks.manager_based.locomotion.velocity.config.hv1_velocity.flat_env_cfg import (
     ARM_JOINT_NAMES,
     LEG_JOINTS,
-    WAIST_JOINT_NAMES,
 )
 
 from .loco_manip_env_cfg import (
@@ -46,12 +45,16 @@ from .loco_manip_env_cfg import (
 TORSO_BODY = "torso_link"
 
 
-# ---- actions: legs + arms + waist (29 joints) ----------------------------
+# ---- actions: legs + arms + waist_roll + waist_pitch (28 joints) ---------
+# waist_yaw is held by PD at the default (0 rad) via `pin_waist_yaw_target_reset`.
+WAIST_ACTUATED_JOINTS = ["waist_roll_joint", "waist_pitch_joint"]
+
+
 @configclass
 class HV1LocoManipV2ActionsCfg(HV1LocoManipActionsCfg):
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=LEG_JOINTS + ARM_JOINT_NAMES + WAIST_JOINT_NAMES,
+        joint_names=LEG_JOINTS + ARM_JOINT_NAMES + WAIST_ACTUATED_JOINTS,
         scale=0.25,
         use_default_offset=True,
     )
@@ -137,19 +140,11 @@ class HV1LocoManipV2RewardsCfg(HV1LocoManipRewardsCfg):
     # Split the waist penalty: yaw is the cheat lever (whole upper body spins
     # for free yaw tracking), roll/pitch are mildly useful for reach.
     # Earlier V2 run had a single -0.1 term — too weak vs +2.0 track_ang_vel_z.
-    # First run (weights -1.0 / -0.3 / -1.5 / -0.05) NaN'd at iter 790: fall
-    # rate jumped to 52% because the policy lost waist+torso as recovery DoFs
-    # before learning leg-only balance, value targets swung wildly, value head
-    # exploded. Halving the new weights so the policy can still partially use
-    # waist/torso during exploration. Bump back up later if needed.
-    joint_deviation_waist_yaw = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.5,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["waist_yaw_joint"])},
-    )
+    # waist_yaw is PD-pinned (not in action space) — no deviation reward needed.
+    # The roll/pitch term keeps the actuated waist from twisting torso aggressively.
     joint_deviation_waist_rp = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.15,
+        weight=-0.2,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot", joint_names=["waist_roll_joint", "waist_pitch_joint"]
@@ -180,8 +175,14 @@ class HV1LocoManipV2EnvCfg(HV1LocoManipEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        # Waist is now part of the action space — drop the Stage-3 PD pin.
-        self.events.pin_waist_target_reset = None
+        # waist_yaw stays PD-pinned at 0; waist_roll/pitch are in action space.
+        # The inherited event was pinning all 3 waist joints — narrow it to yaw.
+        self.events.pin_waist_target_reset.params["asset_cfg"] = SceneEntityCfg(
+            "robot", joint_names=["waist_yaw_joint"], preserve_order=True
+        )
+        self.events.pin_waist_target_reset.params["position_range"] = {
+            "waist_yaw_joint": (0.0, 0.0)
+        }
 
 
 @configclass

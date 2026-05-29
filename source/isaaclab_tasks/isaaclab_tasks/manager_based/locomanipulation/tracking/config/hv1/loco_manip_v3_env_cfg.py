@@ -78,11 +78,11 @@ class HV1LocoManipV3ObservationsCfg(HV1LocoManipV2ObservationsCfg):
 @configclass
 class HV1LocoManipV3RewardsCfg(HV1LocoManipV2RewardsCfg):
 
-    base_height_below = RewTerm(
-        func=custom_mdp.base_height_below_target_l1,
-        weight=0.0,  # disabled — V3 uses commanded height instead
-        params={"target_height": 0.89},
-    )
+    # base_height_below = RewTerm(
+    #     func=custom_mdp.base_height_below_target_l1,
+    #     weight=0.0,  # disabled — V3 uses commanded height instead
+    #     params={"target_height": 0.89},
+    # )
 
     # Track the commanded body height. std=0.05 → ~5 cm sweet spot.
     base_height_tracking = RewTerm(
@@ -116,14 +116,23 @@ class HV1LocoManipV3EnvCfg(HV1LocoManipV2EnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        # Body-height command: tall stand 0.78 m (default), down to 0.55 m
-        # crouch. Resample every 6–10 s so the policy actually sees a change
-        # within a 14 s episode.
+        # Body-height command: from deep crouch (0.70 m) to natural upright
+        # standing (0.95 m, HV1 spawn height). Scaled to HV1's morphology
+        # (~74% of standing at the low end — same proportion as the paper used
+        # for the smaller G1). Resample every 6–10 s so the policy sees a height
+        # change within the 14 s episode.
         self.commands.body_height = custom_mdp.UniformScalarCommandCfg(
             resampling_time_range=(6.0, 10.0),
-            range=(0.55, 0.78),
+            range=(0.70, 0.95),
             log_uniform=False,
         )
+
+        # Override the inherited V1 base_height_below floor. V1 set this to 0.89
+        # (penalty if pelvis < 0.89, enforcing upright walking). V3 commands the
+        # pelvis as low as 0.70, so the floor must drop below the lowest command
+        # to avoid the two reward terms fighting. 0.65 still catches "policy
+        # collapsed / fell over" without triggering on commanded crouches.
+        self.rewards.base_height_below.params["target_height"] = 0.65
 
         # α_t: log-uniform [0.1, 10] per episode (resample once at reset).
         # Wide resample range so it's effectively per-episode, not per-step.
@@ -152,10 +161,10 @@ class HV1LocoManipV3EnvCfg_PLAY(HV1LocoManipV3EnvCfg):
         self.commands.left_ee_pose.resampling_time_range = (4.0, 4.0)
         self.commands.right_ee_pose.resampling_time_range = (4.0, 4.0)
 
-        # Hold body height steady during play so the user can visually inspect
-        # whether the new commands are working (we mostly want to see walking +
-        # EE reach here, height variation can be tested separately).
-        self.commands.body_height.range = (0.75, 0.78)
+        # Hold body height near natural upright during play so the user can
+        # visually inspect walking + EE reach. Crouch behavior can be tested
+        # separately by widening this range.
+        self.commands.body_height.range = (0.80, 0.95)
         # Keep α_t mid-range during play so waist behavior is "average".
         self.commands.waist_regularization.range = (0.5, 2.0)
         self.commands.waist_regularization.log_uniform = False

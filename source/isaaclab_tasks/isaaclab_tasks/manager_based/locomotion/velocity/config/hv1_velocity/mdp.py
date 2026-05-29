@@ -8,8 +8,10 @@ from typing import TYPE_CHECKING
 
 import torch
 
+import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.managers import CommandTerm, CommandTermCfg, SceneEntityCfg
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
@@ -130,6 +132,12 @@ class UniformScalarCommand(CommandTerm):
     If `metric_source` is set (e.g. "root_pos_z"), the abs error between the
     command and that source is published as `Metrics/<command_name>/error`
     every step so it shows up in tensorboard.
+
+    Debug viz: when `metric_source == "root_pos_z"` and `debug_vis=True`, two
+    flat horizontal plates are drawn at the robot's xy:
+      * red  — commanded height
+      * green — current pelvis height
+    so you can see the gap during PLAY.
     """
 
     cfg: "UniformScalarCommandCfg"
@@ -170,6 +178,60 @@ class UniformScalarCommand(CommandTerm):
             raise ValueError(f"Unknown metric_source: {self.cfg.metric_source}")
         self.metrics["error"] = torch.abs(actual - self._command.squeeze(-1))
 
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        # Only meaningful for height (needs robot xy + a z value).
+        if self.cfg.metric_source != "root_pos_z":
+            return
+        if debug_vis:
+            if not hasattr(self, "goal_height_visualizer"):
+                self.goal_height_visualizer = VisualizationMarkers(
+                    self.cfg.goal_height_visualizer_cfg
+                )
+                self.current_height_visualizer = VisualizationMarkers(
+                    self.cfg.current_height_visualizer_cfg
+                )
+            self.goal_height_visualizer.set_visibility(True)
+            self.current_height_visualizer.set_visibility(True)
+        else:
+            if hasattr(self, "goal_height_visualizer"):
+                self.goal_height_visualizer.set_visibility(False)
+                self.current_height_visualizer.set_visibility(False)
+
+    def _debug_vis_callback(self, event):
+        if self.cfg.metric_source != "root_pos_z":
+            return
+        asset = self._env.scene[self.cfg.asset_name]
+        if not asset.is_initialized:
+            return
+        xy = asset.data.root_pos_w[:, :2]
+        goal_z = self._command.squeeze(-1)
+        cur_z = asset.data.root_pos_w[:, 2]
+        # Plate at (root_x, root_y, z) — identity orientation, no scale change.
+        goal_pos = torch.stack([xy[:, 0], xy[:, 1], goal_z], dim=-1)
+        cur_pos = torch.stack([xy[:, 0], xy[:, 1], cur_z], dim=-1)
+        self.goal_height_visualizer.visualize(translations=goal_pos)
+        self.current_height_visualizer.visualize(translations=cur_pos)
+
+
+# Flat 40x40 cm plate, 1 cm thick — horizontal disk-like marker.
+_GOAL_HEIGHT_MARKER_CFG = VisualizationMarkersCfg(
+    markers={
+        "plate": sim_utils.CuboidCfg(
+            size=(0.4, 0.4, 0.01),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.1, 0.1)),
+        ),
+    }
+)
+
+_CURRENT_HEIGHT_MARKER_CFG = VisualizationMarkersCfg(
+    markers={
+        "plate": sim_utils.CuboidCfg(
+            size=(0.4, 0.4, 0.01),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 1.0, 0.1)),
+        ),
+    }
+)
+
 
 @configclass
 class UniformScalarCommandCfg(CommandTermCfg):
@@ -180,6 +242,9 @@ class UniformScalarCommandCfg(CommandTermCfg):
     If `metric_source` is given, an abs-error metric is exposed each step
     against the asset's `asset_name` (default "robot"). Currently supported:
       * "root_pos_z" — for body-height tracking.
+
+    When `metric_source == "root_pos_z"` and `debug_vis=True`, the height
+    command and current pelvis z are visualized as two flat plates.
     """
 
     class_type: type = UniformScalarCommand
@@ -187,6 +252,13 @@ class UniformScalarCommandCfg(CommandTermCfg):
     log_uniform: bool = False
     asset_name: str = "robot"
     metric_source: str | None = None
+
+    goal_height_visualizer_cfg: VisualizationMarkersCfg = _GOAL_HEIGHT_MARKER_CFG.replace(
+        prim_path="/Visuals/Command/body_height_goal"
+    )
+    current_height_visualizer_cfg: VisualizationMarkersCfg = _CURRENT_HEIGHT_MARKER_CFG.replace(
+        prim_path="/Visuals/Command/body_height_current"
+    )
 
 
 def base_height_tracking_exp(

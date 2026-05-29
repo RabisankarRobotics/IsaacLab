@@ -5,14 +5,19 @@ Delta vs V2:
     Stacked along the time axis and auto-flattened by ObservationManager. Gives
     the actor temporal context so it can implicitly estimate base_lin_vel from
     proprioception — paper's State Estimator without the auxiliary MLP head.
-  * New scalar command `body_height` ∈ [0.55, 0.78] m. Resampled every 6–10 s
-    per env. Tracked via `base_height_tracking_exp`. Required for Stage-2
-    later (Commander must be able to issue a height target, e.g. crouch to
-    reach a low EE goal).
+  * New scalar command `body_height` ∈ [0.70, 0.95] m (scaled to HV1
+    morphology — paper used [0.55, 0.78] for the smaller G1, ~74% of standing
+    at the low end). Resampled every 4–6 s per env. Tracked via
+    `base_height_tracking_exp` with weight 4.0 — high relative to walking/EE
+    so the policy actually attends to h^des rather than parking at a
+    comfortable mid-height. Required for Stage-2 later (Commander must be
+    able to issue a height target, e.g. crouch to reach a low EE goal).
   * New scalar command `waist_regularization` (α_t) sampled log-uniform from
-    [0.1, 10] per episode. Modulates the V2 waist-roll/pitch deviation penalty
-    so the policy learns to map α_t → how much it leans on the waist. Same
-    semantics as the paper's α_t, but without KMP yet (added in V4).
+    [0.1, 3.0] per episode (narrowed from paper's [0.1, 10] — at α=10 the
+    waist penalty was suppressing the flexion needed for deep crouch).
+    Modulates the V2 waist-roll/pitch deviation penalty with a milder base
+    weight (-0.05) so effective per-step weight stays in [-0.005, -0.15].
+    Same semantics as the paper's α_t, but without KMP yet (added in V4).
   * Critic obs: gets the same new commands as the actor + privileged
     base_lin_vel (kept from V2). Critic does NOT use history (faster, and the
     value head has access to ground truth for everything anyway).
@@ -87,17 +92,18 @@ class HV1LocoManipV3RewardsCfg(HV1LocoManipV2RewardsCfg):
     # Track the commanded body height. std=0.05 → ~5 cm sweet spot.
     base_height_tracking = RewTerm(
         func=custom_mdp.base_height_tracking_exp,
-        weight=1.0,
+        weight=4.0,
         params={"command_name": "body_height", "std": 0.05},
     )
 
     # Replace V2's fixed-weight waist deviation with an α_t-modulated version.
     # The RewTerm weight here is the *base* magnitude; α_t multiplies it
-    # per-env per-step. With α∈[0.1, 10] and base=-0.2, effective weight
-    # ranges from -0.02 to -2.0 — two decades, as in the paper.
+    # per-env per-step. With α∈[0.1, 3.0] and base=-0.05, effective weight
+    # ranges from -0.005 to -0.15 — wide enough for the policy to learn the
+    # α_t → waist-use mapping without crushing deep-crouch behaviour.
     joint_deviation_waist_rp = RewTerm(
         func=custom_mdp.joint_deviation_l1_alpha_weighted,
-        weight=-0.2,
+        weight=-0.05,
         params={
             "command_name": "waist_regularization",
             "asset_cfg": SceneEntityCfg(
@@ -119,13 +125,15 @@ class HV1LocoManipV3EnvCfg(HV1LocoManipV2EnvCfg):
         # Body-height command: from deep crouch (0.70 m) to natural upright
         # standing (0.95 m, HV1 spawn height). Scaled to HV1's morphology
         # (~74% of standing at the low end — same proportion as the paper used
-        # for the smaller G1). Resample every 6–10 s so the policy sees a height
-        # change within the 14 s episode.
+        # for the smaller G1). Resample every 4–6 s so each 14 s episode sees
+        # ~3 height changes — more gradient signal per episode than the old
+        # 6–10 s schedule which only gave ~1–2 changes.
         self.commands.body_height = custom_mdp.UniformScalarCommandCfg(
-            resampling_time_range=(6.0, 10.0),
+            resampling_time_range=(4.0, 6.0),
             range=(0.70, 0.95),
             log_uniform=False,
             metric_source="root_pos_z",  # → Metrics/body_height/error in tensorboard
+            debug_vis=True,  # red plate = h^des, green plate = pelvis z
         )
 
         # Override the inherited V1 base_height_below floor. V1 set this to 0.89
@@ -135,11 +143,14 @@ class HV1LocoManipV3EnvCfg(HV1LocoManipV2EnvCfg):
         # collapsed / fell over" without triggering on commanded crouches.
         self.rewards.base_height_below.params["target_height"] = 0.65
 
-        # α_t: log-uniform [0.1, 10] per episode (resample once at reset).
+        # α_t: log-uniform [0.1, 3.0] per episode (resample once at reset).
         # Wide resample range so it's effectively per-episode, not per-step.
+        # Upper bound narrowed from paper's 10 because at α=10 with base
+        # weight -0.05 the effective penalty was -0.5/step — still strong
+        # enough to suppress the waist flexion needed for deep crouch.
         self.commands.waist_regularization = custom_mdp.UniformScalarCommandCfg(
             resampling_time_range=(20.0, 20.0),
-            range=(0.1, 10.0),
+            range=(0.1, 3.0),
             log_uniform=True,
         )
 

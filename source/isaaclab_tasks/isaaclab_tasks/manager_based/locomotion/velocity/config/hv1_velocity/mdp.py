@@ -126,6 +126,10 @@ class UniformScalarCommand(CommandTerm):
 
     Either linear-uniform (default) or log-uniform (sample in log10 space then
     exponentiate — useful for the waist regularization weight α_t ∈ [0.1, 10]).
+
+    If `metric_source` is set (e.g. "root_pos_z"), the abs error between the
+    command and that source is published as `Metrics/<command_name>/error`
+    every step so it shows up in tensorboard.
     """
 
     cfg: "UniformScalarCommandCfg"
@@ -133,6 +137,8 @@ class UniformScalarCommand(CommandTerm):
     def __init__(self, cfg: "UniformScalarCommandCfg", env: "ManagerBasedRLEnv"):
         super().__init__(cfg, env)
         self._command = torch.zeros(self.num_envs, 1, device=self.device)
+        if cfg.metric_source is not None:
+            self.metrics["error"] = torch.zeros(self.num_envs, device=self.device)
 
     @property
     def command(self) -> torch.Tensor:
@@ -155,7 +161,14 @@ class UniformScalarCommand(CommandTerm):
         pass
 
     def _update_metrics(self):
-        pass
+        if self.cfg.metric_source is None:
+            return
+        asset = self._env.scene[self.cfg.asset_name]
+        if self.cfg.metric_source == "root_pos_z":
+            actual = asset.data.root_pos_w[:, 2]
+        else:
+            raise ValueError(f"Unknown metric_source: {self.cfg.metric_source}")
+        self.metrics["error"] = torch.abs(actual - self._command.squeeze(-1))
 
 
 @configclass
@@ -163,11 +176,17 @@ class UniformScalarCommandCfg(CommandTermCfg):
     """Cfg for a per-episode scalar command sampled uniformly (or log-uniformly).
 
     Used in V3 for the body-height target h^des and waist-regularization α_t.
+
+    If `metric_source` is given, an abs-error metric is exposed each step
+    against the asset's `asset_name` (default "robot"). Currently supported:
+      * "root_pos_z" — for body-height tracking.
     """
 
     class_type: type = UniformScalarCommand
     range: tuple[float, float] = MISSING
     log_uniform: bool = False
+    asset_name: str = "robot"
+    metric_source: str | None = None
 
 
 def base_height_tracking_exp(

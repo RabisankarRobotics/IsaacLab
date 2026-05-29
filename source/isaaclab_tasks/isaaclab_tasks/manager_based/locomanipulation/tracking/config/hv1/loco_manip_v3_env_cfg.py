@@ -125,6 +125,7 @@ class HV1LocoManipV3EnvCfg(HV1LocoManipV2EnvCfg):
             resampling_time_range=(6.0, 10.0),
             range=(0.70, 0.95),
             log_uniform=False,
+            metric_source="root_pos_z",  # → Metrics/body_height/error in tensorboard
         )
 
         # Override the inherited V1 base_height_below floor. V1 set this to 0.89

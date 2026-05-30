@@ -1,33 +1,40 @@
 """HV1 V3 body-frame loco-manipulation task — HiWET Stage-1 robustification.
 
-Delta vs V2:
+Trained from scratch with a **two-stage curriculum** (no V2 warm-start needed):
+
+  * Stage 1 (iter 0 → 3000, common_step_counter ≤ 72000):
+      `base_height_tracking.weight = 0.0` (disabled). Policy learns walking +
+      EE tracking only. Walking reward is boosted (track_lin_vel_xy_exp=3.0)
+      and EE L1 penalty is softened (-2.0 → -1.0) so the policy actually
+      walks instead of standing still — V2's main failure mode.
+  * Stage 2 (iter 3000+):
+      `CurriculumTerm` flips `base_height_tracking.weight` to 2.5 with
+      std=0.10. By this point the policy has muscle-memory walking + EE,
+      so adding height tracking is a small adjustment rather than a
+      competing objective. Range narrowed to [0.85, 0.95] (mild crouch only,
+      no deep squat) to avoid the physical conflict between deep squat and
+      simultaneous walking + EE reach.
+
+Other deltas vs V2:
   * Observation history: `history_length=5` on the policy group (actor only).
-    Stacked along the time axis and auto-flattened by ObservationManager. Gives
-    the actor temporal context so it can implicitly estimate base_lin_vel from
-    proprioception — paper's State Estimator without the auxiliary MLP head.
-  * New scalar command `body_height` ∈ [0.70, 0.95] m (scaled to HV1
-    morphology — paper used [0.55, 0.78] for the smaller G1, ~74% of standing
-    at the low end). Resampled every 4–6 s per env. Tracked via
-    `base_height_tracking_exp` with weight 4.0 — high relative to walking/EE
-    so the policy actually attends to h^des rather than parking at a
-    comfortable mid-height. Required for Stage-2 later (Commander must be
-    able to issue a height target, e.g. crouch to reach a low EE goal).
+    Stacked along the time axis and auto-flattened by ObservationManager.
+    Gives the actor temporal context so it can implicitly estimate
+    base_lin_vel from proprioception — paper's State Estimator without the
+    auxiliary MLP head.
   * New scalar command `waist_regularization` (α_t) sampled log-uniform from
     [0.1, 3.0] per episode (narrowed from paper's [0.1, 10] — at α=10 the
-    waist penalty was suppressing the flexion needed for deep crouch).
+    waist penalty was suppressing the flexion needed for crouch).
     Modulates the V2 waist-roll/pitch deviation penalty with a milder base
-    weight (-0.05) so effective per-step weight stays in [-0.005, -0.15].
-    Same semantics as the paper's α_t, but without KMP yet (added in V4).
+    weight (-0.05). Same semantics as the paper's α_t, but without KMP yet
+    (added in V4).
   * Critic obs: gets the same new commands as the actor + privileged
     base_lin_vel (kept from V2). Critic does NOT use history (faster, and the
     value head has access to ground truth for everything anyway).
-
-Action space and reward weights inherited from V2 unchanged so V3 can warm-
-start from a V2 checkpoint via --resume.
 """
 
 from __future__ import annotations
 
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -36,6 +43,9 @@ from isaaclab.utils import configclass
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_tasks.manager_based.locomotion.velocity.config.hv1_velocity import mdp as custom_mdp
+from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
+    CurriculumCfg as BaseCurriculumCfg,
+)
 
 from .loco_manip_v2_env_cfg import (
     HV1LocoManipV2EnvCfg,
@@ -89,11 +99,16 @@ class HV1LocoManipV3RewardsCfg(HV1LocoManipV2RewardsCfg):
     #     params={"target_height": 0.89},
     # )
 
-    # Track the commanded body height. std=0.05 → ~5 cm sweet spot.
+    # Track the commanded body height. Weight starts at 0.0 — Stage-1 of the
+    # curriculum disables this so the policy first masters walking + EE.
+    # `CurriculumCfg.enable_height_tracking` flips weight → 2.5 at iter ~3000
+    # (common_step_counter > 72000). std=0.10 gives a forgiving ~10 cm sweet
+    # spot so normal walking-bob (~3-5 cm vertical pelvis oscillation) doesn't
+    # crush the reward and force the policy to stand still.
     base_height_tracking = RewTerm(
         func=custom_mdp.base_height_tracking_exp,
-        weight=4.0,
-        params={"command_name": "body_height", "std": 0.05},
+        weight=0.0,
+        params={"command_name": "body_height", "std": 0.10},
     )
 
     # Replace V2's fixed-weight waist deviation with an α_t-modulated version.
@@ -113,41 +128,79 @@ class HV1LocoManipV3RewardsCfg(HV1LocoManipV2RewardsCfg):
     )
 
 
+# ---- curriculum: enable body-height tracking after walking + EE converge ---
+@configclass
+class HV1LocoManipV3CurriculumCfg(BaseCurriculumCfg):
+    """Stage-1 → Stage-2 trigger.
+
+    `common_step_counter` advances by `num_steps_per_env` (=24) per PPO iter,
+    so `num_steps=72000` ≈ iter 3000. By this point walking + EE should be
+    stable; the curriculum flips `base_height_tracking.weight` from 0.0 to
+    2.5 and the policy starts learning the height command on top.
+
+    Inherits `terrain_levels` from the base (disabled by flat env's
+    __post_init__ via `self.curriculum.terrain_levels = None`).
+    """
+
+    enable_height_tracking = CurrTerm(
+        func=mdp.modify_reward_weight,
+        params={
+            "term_name": "base_height_tracking",
+            "weight": 2.5,
+            "num_steps": 72000,  # iter 3000 × num_steps_per_env 24
+        },
+    )
+
+
 # ---- env config -------------------------------------------------------------
 @configclass
 class HV1LocoManipV3EnvCfg(HV1LocoManipV2EnvCfg):
     observations: HV1LocoManipV3ObservationsCfg = HV1LocoManipV3ObservationsCfg()
     rewards: HV1LocoManipV3RewardsCfg = HV1LocoManipV3RewardsCfg()
+    curriculum: HV1LocoManipV3CurriculumCfg = HV1LocoManipV3CurriculumCfg()
 
     def __post_init__(self):
         super().__post_init__()
 
-        # Body-height command: from deep crouch (0.70 m) to natural upright
-        # standing (0.95 m, HV1 spawn height). Scaled to HV1's morphology
-        # (~74% of standing at the low end — same proportion as the paper used
-        # for the smaller G1). Resample every 4–6 s so each 14 s episode sees
-        # ~3 height changes — more gradient signal per episode than the old
-        # 6–10 s schedule which only gave ~1–2 changes.
+        # --- Stage-1 reward rebalancing (walking + EE focus) ----------------
+        # V2 inherited from V1 set track_lin_vel_xy = 2.0 and EE L1 = -2.0.
+        # That was the source of V2's "small steps / doesn't walk" failure:
+        # the L1 EE penalty (linear in error, up to ~-1.0/step per hand) was
+        # crushing the walking signal whenever EE drift opened up during a
+        # step. Bumping walking and softening the L1 penalty gives the policy
+        # room to commit to a real gait while still tracking EE coarsely.
+        # The tanh fine reward (weight=1.5, std=0.10) is unchanged — it
+        # provides the fine-grained EE tracking signal once the policy is
+        # walking and roughly aligned.
+        self.rewards.track_lin_vel_xy_exp.weight = 3.0   # was 2.0
+        self.rewards.left_ee_pos_tracking.weight = -1.0  # was -2.0 (L1)
+        self.rewards.right_ee_pos_tracking.weight = -1.0  # was -2.0 (L1)
+
+        # --- Body-height command --------------------------------------------
+        # Range narrowed to mild crouch only: 0.85 m = ~10 cm below natural
+        # standing. No deep squat — that creates physical conflict with
+        # simultaneous walking + EE reach (heavily flexed legs can't generate
+        # a useful gait). Stage-2 Commander will issue heights inside this
+        # range; deeper crouch can be unlocked later if a task demands it.
+        # Resample every 4–6 s so each 14 s episode sees ~3 height changes.
         self.commands.body_height = custom_mdp.UniformScalarCommandCfg(
             resampling_time_range=(4.0, 6.0),
-            range=(0.70, 0.95),
+            range=(0.85, 0.95),
             log_uniform=False,
             metric_source="root_pos_z",  # → Metrics/body_height/error in tensorboard
             debug_vis=True,  # red plate = h^des, green plate = pelvis z
         )
 
-        # Override the inherited V1 base_height_below floor. V1 set this to 0.89
-        # (penalty if pelvis < 0.89, enforcing upright walking). V3 commands the
-        # pelvis as low as 0.70, so the floor must drop below the lowest command
-        # to avoid the two reward terms fighting. 0.65 still catches "policy
-        # collapsed / fell over" without triggering on commanded crouches.
-        self.rewards.base_height_below.params["target_height"] = 0.65
+        # Safety floor: penalty if pelvis drops below 0.80 m. With commanded
+        # height ≥ 0.85, a floor of 0.80 gives 5 cm of margin for transient
+        # bob during walking before flagging "policy collapsed / fell over".
+        self.rewards.base_height_below.params["target_height"] = 0.80
 
         # α_t: log-uniform [0.1, 3.0] per episode (resample once at reset).
         # Wide resample range so it's effectively per-episode, not per-step.
         # Upper bound narrowed from paper's 10 because at α=10 with base
-        # weight -0.05 the effective penalty was -0.5/step — still strong
-        # enough to suppress the waist flexion needed for deep crouch.
+        # weight -0.05 the effective penalty was -0.5/step — strong enough to
+        # suppress the waist flexion the policy occasionally needs.
         self.commands.waist_regularization = custom_mdp.UniformScalarCommandCfg(
             resampling_time_range=(20.0, 20.0),
             range=(0.1, 3.0),
@@ -173,10 +226,10 @@ class HV1LocoManipV3EnvCfg_PLAY(HV1LocoManipV3EnvCfg):
         self.commands.left_ee_pose.resampling_time_range = (4.0, 4.0)
         self.commands.right_ee_pose.resampling_time_range = (4.0, 4.0)
 
-        # Hold body height near natural upright during play so the user can
-        # visually inspect walking + EE reach. Crouch behavior can be tested
-        # separately by widening this range.
-        self.commands.body_height.range = (0.80, 0.95)
+        # PLAY uses the same range as training [0.85, 0.95] (mild crouch
+        # only — no deep squat). If you want to stress-test the policy
+        # beyond its training distribution, widen this range manually.
+        self.commands.body_height.range = (0.85, 0.95)
         # Keep α_t mid-range during play so waist behavior is "average".
         self.commands.waist_regularization.range = (0.5, 2.0)
         self.commands.waist_regularization.log_uniform = False

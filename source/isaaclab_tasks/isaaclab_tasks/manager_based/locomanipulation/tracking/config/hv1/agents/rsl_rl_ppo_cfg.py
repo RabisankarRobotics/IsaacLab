@@ -9,7 +9,7 @@ from isaaclab_rl.rsl_rl import (
 @configclass
 class HV1LocoManipPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
-    max_iterations = 15000
+    max_iterations = 20000
     save_interval = 200
     experiment_name = "hv1_locomanip_flat"
 

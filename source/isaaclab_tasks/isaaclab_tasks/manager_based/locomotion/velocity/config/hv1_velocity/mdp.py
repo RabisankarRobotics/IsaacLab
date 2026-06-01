@@ -306,6 +306,40 @@ def joint_deviation_l1_alpha_weighted(
     return alpha * joint_dev
 
 
+def action_rate_l2_joint_subset(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    action_term_name: str = "joint_pos",
+) -> torch.Tensor:
+    """L2 squared action rate over the action positions of a joint subset.
+
+    The built-in ``action_rate_l2`` sums (a_t - a_{t-1})² across the full action
+    vector. This variant lets us tune per-joint-group action smoothness — e.g.,
+    extra arm-jitter penalty without touching legs.
+
+    Maps ``asset_cfg.joint_ids`` (resolved from ``joint_names``) to positions in
+    the action vector by reading the named action term's ``_joint_ids`` order.
+    Cached on the env on first call.
+    """
+    if not hasattr(env, "_action_rate_subset_cache"):
+        env._action_rate_subset_cache = {}
+    cache_key = (action_term_name, tuple(int(j) for j in asset_cfg.joint_ids))
+    positions = env._action_rate_subset_cache.get(cache_key)
+    if positions is None:
+        action_term = env.action_manager.get_term(action_term_name)
+        term_joint_ids = action_term._joint_ids
+        if isinstance(term_joint_ids, slice):
+            term_joint_ids = list(range(env.scene[asset_cfg.name].num_joints))
+        jid_to_pos = {int(jid): i for i, jid in enumerate(term_joint_ids)}
+        positions = [jid_to_pos[int(jid)] for jid in asset_cfg.joint_ids]
+        env._action_rate_subset_cache[cache_key] = positions
+    delta = (
+        env.action_manager.action[:, positions]
+        - env.action_manager.prev_action[:, positions]
+    )
+    return torch.sum(torch.square(delta), dim=1)
+
+
 def randomize_arm_joint_targets(
     env: "ManagerBasedRLEnv",
     env_ids: torch.Tensor,

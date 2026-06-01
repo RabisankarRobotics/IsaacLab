@@ -43,6 +43,9 @@ from isaaclab.utils import configclass
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_tasks.manager_based.locomotion.velocity.config.hv1_velocity import mdp as custom_mdp
+from isaaclab_tasks.manager_based.locomotion.velocity.config.hv1_velocity.flat_env_cfg import (
+    ARM_JOINT_NAMES,
+)
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
     CurriculumCfg as BaseCurriculumCfg,
 )
@@ -111,6 +114,22 @@ class HV1LocoManipV3RewardsCfg(HV1LocoManipV2RewardsCfg):
         params={"command_name": "body_height", "std": 0.10},
     )
 
+    # Extra action-rate penalty on the arm joints only — sits on top of the
+    # inherited global `action_rate_l2 = -0.003`. Arms have no joint-deviation
+    # anchor (only EE pose tracking) and during walking they tend to flap as
+    # emergent counter-balance to leg swing. The global rate covers them at
+    # -0.003 already; this term adds -0.007 → effective -0.010 for arm dims,
+    # which suppresses high-frequency jitter without affecting steady reach
+    # (slow arm motion costs almost nothing in (a_t-a_{t-1})²). Legs and waist
+    # are untouched so the in-progress gait is not disturbed mid-resume.
+    action_rate_arms_l2 = RewTerm(
+        func=custom_mdp.action_rate_l2_joint_subset,
+        weight=-0.007,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
+        },
+    )
+
     # Replace V2's fixed-weight waist deviation with an α_t-modulated version.
     # The RewTerm weight here is the *base* magnitude; α_t multiplies it
     # per-env per-step. With α∈[0.1, 3.0] and base=-0.05, effective weight
@@ -175,6 +194,25 @@ class HV1LocoManipV3EnvCfg(HV1LocoManipV2EnvCfg):
         self.rewards.track_lin_vel_xy_exp.weight = 3.0   # was 2.0
         self.rewards.left_ee_pos_tracking.weight = -1.0  # was -2.0 (L1)
         self.rewards.right_ee_pos_tracking.weight = -1.0  # was -2.0 (L1)
+
+        # --- Stage-3 rebalance (applied for resume at iter ~9500) -----------
+        # At iter ~9500 walking/ang_vel/height were all >85% saturated while
+        # EE fine sat at ~15% (0.24/1.5) — policy abandoned EE because the
+        # softened L1 (-1.0) and weak orient (-0.2) couldn't compete with
+        # +6.6/step from walking+height. Paper trains EE+walking simultaneously
+        # (HiWET Eq. 3), so we keep that structure and pull EE back into the
+        # gradient by restoring strong weights. std=0.15 (was 0.10) widens the
+        # tanh sweet spot so walking-bob (~3-5 cm wrist motion) doesn't crush
+        # the gradient mid-step. Orient weight doubled to anchor end-effector
+        # roll/pitch/yaw which was at 0.4 rad error.
+        self.rewards.left_ee_pos_tracking.weight = -2.5       # was -1.0
+        self.rewards.right_ee_pos_tracking.weight = -2.5      # was -1.0
+        self.rewards.left_ee_pos_tracking_fine.weight = 2.5   # was 1.5
+        self.rewards.right_ee_pos_tracking_fine.weight = 2.5  # was 1.5
+        self.rewards.left_ee_pos_tracking_fine.params["std"] = 0.15   # was 0.10
+        self.rewards.right_ee_pos_tracking_fine.params["std"] = 0.15
+        self.rewards.left_ee_orient_tracking.weight = -0.4    # was -0.2
+        self.rewards.right_ee_orient_tracking.weight = -0.4
 
         # --- Body-height command --------------------------------------------
         # Range narrowed to mild crouch only: 0.85 m = ~10 cm below natural

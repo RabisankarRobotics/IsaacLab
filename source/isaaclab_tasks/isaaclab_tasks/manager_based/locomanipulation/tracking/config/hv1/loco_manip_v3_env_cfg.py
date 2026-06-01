@@ -102,15 +102,24 @@ class HV1LocoManipV3RewardsCfg(HV1LocoManipV2RewardsCfg):
     #     params={"target_height": 0.89},
     # )
 
-    # Track the commanded body height. Weight starts at 0.0 — Stage-1 of the
-    # curriculum disables this so the policy first masters walking + EE.
-    # `CurriculumCfg.enable_height_tracking` flips weight → 2.5 at iter ~3000
-    # (common_step_counter > 72000). std=0.10 gives a forgiving ~10 cm sweet
+    # Track the commanded body height. std=0.10 gives a forgiving ~10 cm sweet
     # spot so normal walking-bob (~3-5 cm vertical pelvis oscillation) doesn't
     # crush the reward and force the policy to stand still.
+    #
+    # Weight=2.5 is the post-curriculum (Stage-2) value. Curriculum
+    # `CurriculumCfg.enable_height_tracking` would also push this to 2.5 at
+    # iter ~3000 (common_step_counter > 72000) but only fires for fresh-from-
+    # scratch training — `common_step_counter` is NOT persisted in RSL-RL
+    # checkpoints, so on resume it resets to 0 and the curriculum waits
+    # another 3000 iters before firing. We pin the post-curriculum weight
+    # directly so resumed training sees the correct reward immediately.
+    #
+    # If retraining V3 from scratch (no resume), set this back to weight=0.0
+    # so the staged curriculum applies — Stage-1 walking+EE then Stage-2 adds
+    # height. The curriculum below will then flip to 2.5 at iter 3000.
     base_height_tracking = RewTerm(
         func=custom_mdp.base_height_tracking_exp,
-        weight=0.0,
+        weight=2.5,  # was 0.0 (Stage-1) — pinned for resume robustness
         params={"command_name": "body_height", "std": 0.10},
     )
 

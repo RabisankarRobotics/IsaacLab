@@ -133,7 +133,7 @@ class HV1LocoManipV3RewardsCfg(HV1LocoManipV2RewardsCfg):
     # are untouched so the in-progress gait is not disturbed mid-resume.
     action_rate_arms_l2 = RewTerm(
         func=custom_mdp.action_rate_l2_joint_subset,
-        weight=-0.007,
+        weight=-0.015,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
         },

@@ -279,6 +279,26 @@ def base_height_tracking_exp(
     return torch.exp(-err_sq / (std ** 2))
 
 
+def base_height_above_command_l1(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """One-sided L1 penalty when the base stands TALLER than the commanded height.
+
+    Symmetric counterpart to `base_height_below_target_l1`, but reads the
+    threshold per-env from a `UniformScalarCommand` instead of a fixed scalar.
+    Returns max(0, actual_height - commanded_height). Use NEGATIVE weight.
+
+    Pairs with `base_height_tracking_exp(std=0.05)`: the exp reward gives the
+    fine gradient near target; this L1 keeps pushing once exp saturates so the
+    policy cannot park 5–10 cm above the commanded crouch and ignore it.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    target = env.command_manager.get_command(command_name).squeeze(-1)
+    return torch.clamp(asset.data.root_pos_w[:, 2] - target, min=0.0)
+
+
 def joint_deviation_l1_alpha_weighted(
     env: "ManagerBasedRLEnv",
     command_name: str,

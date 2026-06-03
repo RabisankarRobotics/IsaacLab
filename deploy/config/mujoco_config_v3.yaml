@@ -1,0 +1,264 @@
+meta:
+  task: Isaac-Tracking-LocoManipV3-HV1-v0
+  play_task: Isaac-Tracking-LocoManipV3-HV1-Play-v0
+  experiment_name: hv1_locomanip_v3_flat
+  run_dir: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_locomanip_v3_flat/2026-06-01_17-36-19
+  checkpoint: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_locomanip_v3_flat/2026-06-01_17-36-19/model_31999.pt
+robot:
+  xml_path: /home/rabisankar/IsaacLab/deploy/mujoco/scene.xml
+  num_dof_total: 31
+  joint_names_isaac_order:
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
+  - waist_yaw_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
+  - waist_pitch_joint
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
+  - waist_roll_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_shoulder_pitch_joint
+  - neck_yaw_joint
+  - right_shoulder_pitch_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
+  - left_shoulder_roll_joint
+  - neck_pitch_joint
+  - right_shoulder_roll_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_shoulder_yaw_joint
+  - right_shoulder_yaw_joint
+  - left_elbow_joint
+  - right_elbow_joint
+  - left_wrist_roll_joint
+  - right_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - right_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_wrist_yaw_joint
+  default_joint_pos:
+  - -0.20000000298023224
+  - -0.20000000298023224
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.4000000059604645
+  - 0.4000000059604645
+  - 0.30000001192092896
+  - 0.0
+  - 0.30000001192092896
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - -0.20000000298023224
+  - -0.20000000298023224
+  - 0.0
+  - 0.0
+  - 0.30000001192092896
+  - 0.30000001192092896
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  kp:
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 200.0
+  - 80.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 80.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 80.0
+  - 80.0
+  - 80.0
+  - 80.0
+  kd:
+  - 15.0
+  - 15.0
+  - 15.0
+  - 15.0
+  - 15.0
+  - 15.0
+  - 15.0
+  - 15.0
+  - 15.0
+  - 15.0
+  - 15.0
+  - 20.0
+  - 3.0
+  - 20.0
+  - 25.0
+  - 25.0
+  - 20.0
+  - 3.0
+  - 20.0
+  - 25.0
+  - 25.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 25.0
+  - 25.0
+  - 3.0
+  - 3.0
+  - 3.0
+  - 3.0
+  effort_limit:
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 43.0
+  - 10.5
+  - 43.0
+  - 20.0
+  - 20.0
+  - 43.0
+  - 10.5
+  - 43.0
+  - 20.0
+  - 20.0
+  - 43.0
+  - 43.0
+  - 43.0
+  - 43.0
+  - 20.0
+  - 20.0
+  - 10.5
+  - 10.5
+  - 10.5
+  - 10.5
+action:
+  dim: 28
+  joint_names_action_order:
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
+  - waist_pitch_joint
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
+  - waist_roll_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_shoulder_pitch_joint
+  - right_shoulder_pitch_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
+  - left_shoulder_roll_joint
+  - right_shoulder_roll_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_shoulder_yaw_joint
+  - right_shoulder_yaw_joint
+  - left_elbow_joint
+  - right_elbow_joint
+  - left_wrist_roll_joint
+  - right_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - right_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_wrist_yaw_joint
+  scale: 0.25
+  use_default_offset: true
+observation:
+  total_dim: 605
+  terms:
+  - name: base_ang_vel
+    dim: 15
+  - name: projected_gravity
+    dim: 15
+  - name: projected_gravity_torso
+    dim: 15
+  - name: torso_ang_vel
+    dim: 15
+  - name: velocity_commands
+    dim: 15
+  - name: joint_pos
+    dim: 155
+  - name: joint_vel
+    dim: 155
+  - name: actions
+    dim: 140
+  - name: left_ee_pose_command
+    dim: 35
+  - name: right_ee_pose_command
+    dim: 35
+  - name: body_height_command
+    dim: 5
+  - name: waist_alpha_command
+    dim: 5
+  obs_scales:
+    lin_vel: 1.0
+    ang_vel: 1.0
+    joint_pos: 1.0
+    joint_vel: 1.0
+    _comment: Isaac Lab manager-based env returns RAW values (no scaling).
+control:
+  sim_dt: 0.005
+  decimation: 4
+  policy_dt: 0.02
+commands:
+  active_terms:
+  - name: base_velocity
+    dim: 3
+  - name: left_ee_pose
+    dim: 7
+  - name: right_ee_pose
+    dim: 7
+  - name: body_height
+    dim: 1
+  - name: waist_regularization
+    dim: 1
+  init_velocity:
+  - 0.0
+  - 0.0
+  - 0.0
+  _comment: Set EE pose commands at runtime (per-hand) in the MuJoCo runner.
+policy:
+  jit_path: deploy/model/velocity_height_ee_tracking/policy.pt
+  onnx_path: /home/rabisankar/IsaacLab/deploy/model/velocity_height_ee_tracking/policy.onnx
+  exists: true
+  size_mb: 1.84
+  actor_obs_normalization: null
+  actor_hidden_dims: null
+  activation: null

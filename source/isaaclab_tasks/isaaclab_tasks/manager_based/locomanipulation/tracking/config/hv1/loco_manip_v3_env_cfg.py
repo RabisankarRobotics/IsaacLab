@@ -155,6 +155,19 @@ class HV1LocoManipV3RewardsCfg(HV1LocoManipV2RewardsCfg):
         },
     )
 
+    # Stage-4 addition: one-sided "above target" L1 penalty on body height.
+    # Pairs with `base_height_tracking` (exp) so the policy is squeezed from
+    # both sides — exp gives the smooth gradient inside the std window,
+    # this L1 keeps pushing once exp saturates. Without this, the policy
+    # parks pelvis 5–10 cm above the commanded crouch and ignores the cmd.
+    # Weight bumped in __post_init__'s Stage-4 block; declared here so the
+    # RewardManager registers it at construction time.
+    base_height_above = RewTerm(
+        func=custom_mdp.base_height_above_command_l1,
+        weight=-1.5,
+        params={"command_name": "body_height"},
+    )
+
 
 # ---- curriculum: enable body-height tracking after walking + EE converge ---
 @configclass
@@ -190,38 +203,54 @@ class HV1LocoManipV3EnvCfg(HV1LocoManipV2EnvCfg):
     def __post_init__(self):
         super().__post_init__()
 
-        # --- Stage-1 reward rebalancing (walking + EE focus) ----------------
-        # V2 inherited from V1 set track_lin_vel_xy = 2.0 and EE L1 = -2.0.
-        # That was the source of V2's "small steps / doesn't walk" failure:
-        # the L1 EE penalty (linear in error, up to ~-1.0/step per hand) was
-        # crushing the walking signal whenever EE drift opened up during a
-        # step. Bumping walking and softening the L1 penalty gives the policy
-        # room to commit to a real gait while still tracking EE coarsely.
-        # The tanh fine reward (weight=1.5, std=0.10) is unchanged — it
-        # provides the fine-grained EE tracking signal once the policy is
-        # walking and roughly aligned.
-        self.rewards.track_lin_vel_xy_exp.weight = 3.0   # was 2.0
-        self.rewards.left_ee_pos_tracking.weight = -1.0  # was -2.0 (L1)
-        self.rewards.right_ee_pos_tracking.weight = -1.0  # was -2.0 (L1)
-
-        # --- Stage-3 rebalance (applied for resume at iter ~9500) -----------
-        # At iter ~9500 walking/ang_vel/height were all >85% saturated while
-        # EE fine sat at ~15% (0.24/1.5) — policy abandoned EE because the
-        # softened L1 (-1.0) and weak orient (-0.2) couldn't compete with
-        # +6.6/step from walking+height. Paper trains EE+walking simultaneously
-        # (HiWET Eq. 3), so we keep that structure and pull EE back into the
-        # gradient by restoring strong weights. std=0.15 (was 0.10) widens the
-        # tanh sweet spot so walking-bob (~3-5 cm wrist motion) doesn't crush
-        # the gradient mid-step. Orient weight doubled to anchor end-effector
-        # roll/pitch/yaw which was at 0.4 rad error.
-        self.rewards.left_ee_pos_tracking.weight = -2.5       # was -1.0
-        self.rewards.right_ee_pos_tracking.weight = -2.5      # was -1.0
-        self.rewards.left_ee_pos_tracking_fine.weight = 2.5   # was 1.5
-        self.rewards.right_ee_pos_tracking_fine.weight = 2.5  # was 1.5
-        self.rewards.left_ee_pos_tracking_fine.params["std"] = 0.15   # was 0.10
+        # --- Walking + EE reward weights (post-Stage-3) ---------------------
+        # Two earlier in-place rebalances are folded into this single block:
+        #   Stage-1: bumped track_lin_vel 2.0→3.0 and softened EE L1 to -1.0 to
+        #     fix V2's "doesn't walk" failure (EE L1 was crushing the walking
+        #     signal whenever EE drift opened up during a step).
+        #   Stage-3 (resume at iter ~9500): policy had abandoned EE — fine sat
+        #     at 15% vs walking+height at 85%+, gradient mismatch. Restored EE
+        #     L1 to -2.5 and bumped fine 1.5→2.5, widened std 0.10→0.15 so
+        #     walking-bob (~3-5 cm wrist motion) doesn't crush the gradient,
+        #     doubled orient weight to anchor wrist roll/pitch/yaw.
+        # Values below are the FINAL active weights (Stage-1 and Stage-3
+        # overlaps removed to stop the dead-assignment trap).
+        self.rewards.track_lin_vel_xy_exp.weight = 3.0
+        self.rewards.left_ee_pos_tracking.weight = -2.5
+        self.rewards.right_ee_pos_tracking.weight = -2.5
+        self.rewards.left_ee_pos_tracking_fine.weight = 2.5
+        self.rewards.right_ee_pos_tracking_fine.weight = 2.5
+        self.rewards.left_ee_pos_tracking_fine.params["std"] = 0.15
         self.rewards.right_ee_pos_tracking_fine.params["std"] = 0.15
-        self.rewards.left_ee_orient_tracking.weight = -0.4    # was -0.2
+        self.rewards.left_ee_orient_tracking.weight = -0.4
         self.rewards.right_ee_orient_tracking.weight = -0.4
+
+        # --- Stage-4 rebalance (resume at iter ~32000) ----------------------
+        # V3 converged on walking + EE + waist α_t but two failure modes
+        # remained, both visible in PLAY *and* MuJoCo sim2sim:
+        #   1. Body height under-tracked. With std=0.10 and weight=2.5, a 5cm
+        #      error costs only ~0.55/step (2.5 - 2.5·exp(-0.25)) — trivial vs
+        #      walking+EE giving ~10/step. The policy parks the pelvis near
+        #      0.93m (default) and ignores commands in [0.85, 0.95].
+        #   2. Stand-still broken. Inherited rel_standing_envs=0.05 → only 5%
+        #      of training envs ever saw zero velocity. The combined
+        #      stand_still_legs (-1.0) reward had near-zero gradient signal.
+        #      Result: marching-in-place idle gait when commanded vel=0.
+        # Fix without retraining from scratch:
+        #   - Tighter std (0.10→0.05) makes the exp gradient sharp near target
+        #     (5cm error now costs ~1.6/step at weight 5.0 vs old 0.55).
+        #   - Symmetric "above target" L1 keeps pushing when exp saturates,
+        #     mirroring base_height_below (which only catches sag).
+        #   - rel_standing_envs 0.05→0.20 quadruples stand-still gradient
+        #     volume; stand_still_legs weight doubled (-1.0→-2.0) so each
+        #     standing env contributes more pull per step.
+        # Walking + EE weights untouched: those skills shouldn't regress.
+        self.rewards.base_height_tracking.weight = 5.0           # was 2.5
+        self.rewards.base_height_tracking.params["std"] = 0.05    # was 0.10
+        # base_height_above is declared statically in HV1LocoManipV3RewardsCfg
+        # at weight=-1.5; no per-init override needed.
+        self.commands.base_velocity.rel_standing_envs = 0.20      # was 0.05
+        self.rewards.stand_still_legs.weight = -2.0               # was -1.0
 
         # --- Body-height command --------------------------------------------
         # Range narrowed to mild crouch only: 0.85 m = ~10 cm below natural

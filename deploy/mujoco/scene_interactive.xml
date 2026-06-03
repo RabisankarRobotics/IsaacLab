@@ -1,0 +1,76 @@
+<mujoco model="hv1 scene interactive">
+  <!--
+    Interactive HV1 scene: same as scene.xml but adds 3 mocap bodies that the
+    user can drag in the viewer to set EE pose / body-height targets:
+      * left_ee_target    (red sphere)
+      * right_ee_target   (blue sphere)
+      * body_height_target (green flat disk — only Z matters)
+
+    Mocap controls in the viewer:
+      Double-click the body to select it, then:
+        Ctrl + right-mouse-drag   → translate in the camera's XY plane
+        Ctrl + shift + right-drag → translate along the camera's Z axis
+        Ctrl + left-mouse-drag    → rotate (for EE orientation)
+
+    All mocap geoms have contype=0/conaffinity=0 so they do not collide with
+    the robot or the floor — they are purely visual + draggable handles.
+  -->
+
+  <include file="/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/urdf_mesh/hv1/hv1.xml"/>
+
+  <statistic center="0.0 0.0 1.0" extent="2.0"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0.9 0.9 0.9"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-140" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="flat" rgb1="0 0 0" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8"
+             width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true"
+              texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="1 0 3.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- Left EE target: red translucent sphere. Initial pose ≈ default
+         standing left wrist in world frame. -->
+    <body name="left_ee_target" mocap="true" pos="0.20 0.25 1.00" quat="1 0 0 0">
+      <geom type="sphere" size="0.04" rgba="1.0 0.2 0.2 0.55"
+            contype="0" conaffinity="0" group="2"/>
+      <!-- Small axis triad so orientation is visible -->
+      <geom type="cylinder" fromto="0 0 0  0.08 0 0" size="0.005"
+            rgba="1 0 0 0.8" contype="0" conaffinity="0" group="2"/>
+      <geom type="cylinder" fromto="0 0 0  0 0.08 0" size="0.005"
+            rgba="0 1 0 0.8" contype="0" conaffinity="0" group="2"/>
+      <geom type="cylinder" fromto="0 0 0  0 0 0.08" size="0.005"
+            rgba="0 0 1 0.8" contype="0" conaffinity="0" group="2"/>
+    </body>
+
+    <!-- Right EE target: blue translucent sphere -->
+    <body name="right_ee_target" mocap="true" pos="0.20 -0.25 1.00" quat="1 0 0 0">
+      <geom type="sphere" size="0.04" rgba="0.2 0.2 1.0 0.55"
+            contype="0" conaffinity="0" group="2"/>
+      <geom type="cylinder" fromto="0 0 0  0.08 0 0" size="0.005"
+            rgba="1 0 0 0.8" contype="0" conaffinity="0" group="2"/>
+      <geom type="cylinder" fromto="0 0 0  0 0.08 0" size="0.005"
+            rgba="0 1 0 0.8" contype="0" conaffinity="0" group="2"/>
+      <geom type="cylinder" fromto="0 0 0  0 0 0.08" size="0.005"
+            rgba="0 0 1 0.8" contype="0" conaffinity="0" group="2"/>
+    </body>
+
+    <!-- Body-height target: thin green disk anchored to world XY=0, only
+         Z is read by the deploy script. Drag UP/DOWN to set target height. -->
+    <body name="body_height_target" mocap="true" pos="0 0 0.90" quat="1 0 0 0">
+      <geom type="cylinder" size="0.30 0.005" rgba="0.2 0.9 0.3 0.35"
+            contype="0" conaffinity="0" group="2"/>
+    </body>
+  </worldbody>
+
+</mujoco>

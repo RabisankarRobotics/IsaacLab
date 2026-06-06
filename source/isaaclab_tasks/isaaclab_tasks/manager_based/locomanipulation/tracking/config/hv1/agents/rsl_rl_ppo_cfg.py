@@ -64,3 +64,17 @@ class HV1LocoManipV3PPORunnerCfg(HV1LocoManipV2PPORunnerCfg):
 
     experiment_name = "hv1_locomanip_v3_flat"
     obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+
+
+@configclass
+class HV1LocoManipV4PPORunnerCfg(HV1LocoManipV3PPORunnerCfg):
+    """V4 (HiWET KMP-residual) — same PPO knobs as V3, shorter horizon.
+
+    The actor now outputs a residual on top of a frozen KMP MLP, not a full
+    joint posture. Expected convergence is ~5-8k iters (vs V3's 30-40k from
+    scratch) because the kinematic search has already been solved offline.
+    """
+
+    experiment_name = "hv1_locomanip_v4_flat"
+    max_iterations = 15000
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}

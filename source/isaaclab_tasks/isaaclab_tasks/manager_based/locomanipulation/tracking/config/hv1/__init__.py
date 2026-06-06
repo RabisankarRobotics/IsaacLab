@@ -65,3 +65,24 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV3PPORunnerCfg",
     },
 )
+
+# V4 (HiWET KMP-residual): actor outputs residual on top of frozen KMP MLP.
+gym.register(
+    id="Isaac-Tracking-LocoManipV4-HV1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_v4_env_cfg:HV1LocoManipV4EnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV4PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Tracking-LocoManipV4-HV1-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_v4_env_cfg:HV1LocoManipV4EnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV4PPORunnerCfg",
+    },
+)

@@ -360,6 +360,26 @@ def action_rate_l2_joint_subset(
     return torch.sum(torch.square(delta), dim=1)
 
 
+def kmp_residual_l2(
+    env: "ManagerBasedRLEnv",
+    action_term_name: str = "joint_pos",
+) -> torch.Tensor:
+    """HiWET Eq. 12: penalty on the actor's residual on top of the KMP prior.
+
+    When the action term is a `KMPResidualJointPositionAction`, the actor's
+    raw output IS the residual the network adds to `q_prior`. Penalizing its
+    L2 norm keeps the actor's correction small and anchored to the KMP's
+    kinematically-feasible posture, while still allowing deviation when
+    walking dynamics demand it.
+
+    Equivalent to action_l2 over the joint_pos term. Kept as a separate name
+    so it shows up as Episode_Reward/r_kmp in tensorboard with the right
+    semantic identity (this is the paper's r_kmp, not generic regularization).
+    """
+    raw = env.action_manager.get_term(action_term_name).raw_actions
+    return torch.sum(torch.square(raw), dim=1)
+
+
 def randomize_arm_joint_targets(
     env: "ManagerBasedRLEnv",
     env_ids: torch.Tensor,

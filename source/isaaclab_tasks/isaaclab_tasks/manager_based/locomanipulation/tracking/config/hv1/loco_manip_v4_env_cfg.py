@@ -149,36 +149,31 @@ class HV1LocoManipV4EnvCfg(HV1LocoManipV3EnvCfg):
         if hasattr(self.curriculum, "enable_height_tracking"):
             self.curriculum.enable_height_tracking = None
 
-        # --- Soften shaping weights: KMP handles posture geometry ----------
-        # action_rate penalizes high-freq joint chatter. KMP outputs a smooth
-        # q_prior; only the residual contributes chatter, and the residual
-        # is already small (scale 0.15). Halve the penalty so we don't
-        # double-tax the residual.
-        if hasattr(self.rewards, "action_rate_l2"):
-            self.rewards.action_rate_l2.weight = (
-                float(self.rewards.action_rate_l2.weight) * 0.5
-            )
-        if hasattr(self.rewards, "action_rate_arms_l2"):
-            self.rewards.action_rate_arms_l2.weight = (
-                float(self.rewards.action_rate_arms_l2.weight) * 0.5
-            )
+        # --- Restore V3 shaping weights -------------------------------------
+        # Earlier "halve everything because KMP handles geometry" softening
+        # was wrong: V3's tuned shaping was load-bearing for GAIT, not just
+        # posture. At iter 3000 of the first V4 run we observed:
+        #   * EE tracking already solved (~9 cm — V3 needed 32000 iters)
+        #   * height tracking decent
+        #   * feet_air_time ≈ 0.0005 (feet never airborne, robot slides)
+        #   * base_contact termination = 57% (falls when commanded to walk)
+        # The cheapest strategy with the over-softened weights was "stand
+        # in q_prior pose and collect EE+height rewards." Restoring V3's
+        # stand_still / action_rate / joint_deviation pressure rebuilds the
+        # gradient toward "lift feet and walk" without touching the V4-
+        # specific KMP terms (r_kmp + KMP residual action).
+        #
+        # No __post_init__ change vs V3 here: V3's __post_init__ already set
+        # the tuned weights (Stage-4 values), and our super().__post_init__()
+        # call applied them. Nothing further to do.
 
-        # joint_deviation anchors joints to a default pose. The KMP IS the
-        # anchor in V4 — its q_prior is the natural posture for any command.
-        # Halve any joint_deviation terms inherited from V3.
-        for term_name in [
-            "joint_deviation_legs", "joint_deviation_arms",
-            "joint_deviation_waist_rp",
-        ]:
-            if hasattr(self.rewards, term_name):
-                term = getattr(self.rewards, term_name)
-                if term is not None and term.weight is not None:
-                    term.weight = float(term.weight) * 0.5
-
-        # stand_still_legs: at v=0, KMP already produces a standing posture,
-        # so we need less explicit pressure to suppress marching-in-place.
-        if hasattr(self.rewards, "stand_still_legs"):
-            self.rewards.stand_still_legs.weight = -0.5  # V3 had -2.0
+        # Encourage longer foot-air time. V3 inherits a feet_air_time term
+        # from the base velocity env with a modest positive weight; with
+        # KMP making the static pose easy, we boost this so the policy is
+        # explicitly rewarded for lifting feet (the missing signal in the
+        # iter-3000 run).
+        if hasattr(self.rewards, "feet_air_time"):
+            self.rewards.feet_air_time.weight = float(self.rewards.feet_air_time.weight) * 2.0
 
 
 @configclass

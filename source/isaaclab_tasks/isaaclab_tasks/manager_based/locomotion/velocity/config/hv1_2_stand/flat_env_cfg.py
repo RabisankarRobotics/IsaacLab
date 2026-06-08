@@ -32,7 +32,7 @@ LEG_JOINTS = [
     "^(left|right)_ankle_(pitch|roll)_joint$",
 ]
 WAIST_JOINT_NAMES = ["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"]
-HEAD_JOINT_NAMES = ["head_pitch_joint", "head_roll_joint", "head_yaw_joint"]
+HEAD_JOINT_NAMES = ["head_pitch_joint", "head_yaw_joint"]  # 2-DoF head (no head_roll in without_ee URDF)
 ARM_JOINT_NAMES = [
     "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
     "left_elbow_joint",

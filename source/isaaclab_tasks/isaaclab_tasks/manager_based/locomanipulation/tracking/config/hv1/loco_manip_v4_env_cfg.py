@@ -8,15 +8,20 @@ V4 differences vs V3:
     where `scale` is per-joint (legs 0.25, arms/waist 0.10) so leg swing
     has the range it needs while arm corrections stay small.
     PD layer downstream is unchanged.
-  * New reward `r_kmp = -‖residual‖²` (weight -0.05) per HiWET Eq. 12.
+  * r_kmp DISABLED (weight 0). HiWET's -0.05 weight rewards staying near
+    q_prior, which is the *standing* pose for any command (the KMP was
+    trained only on staged-IK statics, no gait). With r_kmp on, the
+    17400-iter run greedy-climbed into a "stand still in KMP pose" local
+    optimum and never learned to walk. Re-enable later (small positive
+    weight like 1e-3) for regularization once walking exists.
   * Curriculum dropped — body-height tracking is enabled from iter 0. KMP
-    makes height a kinematic constraint (already solved offline), so V3's
-    two-stage walk-then-add-height curriculum is no longer needed.
-  * Shaping rewards halved (action_rate, joint_deviation): KMP already
-    smooths and anchors posture, the original shaping pressure is double-
-    counting.
-  * stand_still_legs softened (-2.0 -> -0.5): KMP at v=0 already produces a
-    standing posture, less reward shaping needed to discourage marching.
+    makes height a kinematic constraint (already solved offline).
+  * Walking-escape shaping (post 17400-iter standing-still run):
+      feet_air_time × 5  (was × 2 — too weak to dominate the standing pit)
+      stand_still_legs   = -5.0   (was -2.0 — robot ignored it)
+      rel_standing_envs  = 0.05   (was 0.20 — too fat a free-reward floor)
+      track_lin_vel_xy_exp.weight = 5.0  (was 3.0 — lifts marginal value
+                                          of "actually walk" above standing)
 
 Train from scratch — do NOT warm-start from V3. V3 weights are tuned for
 "discover IK and dynamics simultaneously" and feeding them into V4 (where
@@ -120,9 +125,18 @@ class HV1LocoManipV4ActionsCfg(HV1LocoManipV2ActionsCfg):
 class HV1LocoManipV4RewardsCfg(HV1LocoManipV3RewardsCfg):
     """V3 rewards plus r_kmp; shaping weights softened in __post_init__."""
 
+    # r_kmp DISABLED for V4-walk pass.
+    # The HiWET -0.05 weight rewards STAYING NEAR q_prior; q_prior is the
+    # *standing* posture for any given command, since the KMP was trained
+    # on staged-IK statics with no gait. With r_kmp on, the 17400-iter run
+    # converged to "output zero residual, stand still, collect +9 reward,
+    # ignore the -2 stand_still penalty." Setting weight=0 lets the actor
+    # produce the swing-magnitude residuals walking actually needs. Re-
+    # enable (small positive weight like 1e-3) only after walking emerges,
+    # to gently regularize once a stable gait exists.
     r_kmp = RewTerm(
         func=custom_mdp.kmp_residual_l2,
-        weight=-0.05,  # HiWET Eq. 12 default
+        weight=0.0,
         params={"action_term_name": "joint_pos"},
     )
 
@@ -167,13 +181,51 @@ class HV1LocoManipV4EnvCfg(HV1LocoManipV3EnvCfg):
         # the tuned weights (Stage-4 values), and our super().__post_init__()
         # call applied them. Nothing further to do.
 
-        # Encourage longer foot-air time. V3 inherits a feet_air_time term
-        # from the base velocity env with a modest positive weight; with
-        # KMP making the static pose easy, we boost this so the policy is
-        # explicitly rewarded for lifting feet (the missing signal in the
-        # iter-3000 run).
+        # --- Walking-escape shaping (post 17400-iter standing-still run) ---
+        # The previous V4 run converged to a standing-still local optimum:
+        # feet_air_time=0.0009, error_vel_xy=0.48, base_contact term 16%,
+        # ep_reward=103 (all from EE + height + standing envs). The fixes
+        # below break the standing pit by (a) removing the r_kmp anchor
+        # that pulled residuals to zero (see RewardsCfg above), (b) making
+        # standing more expensive than transient walking instability, and
+        # (c) shrinking the "free reward" floor from rel_standing_envs.
+
+        # (1) Crank feet_air_time 5x — the only direct "lift your feet"
+        #     signal in the reward stack. 2x in the previous run wasn't
+        #     enough to dominate the standing pose reward sum.
         if hasattr(self.rewards, "feet_air_time"):
-            self.rewards.feet_air_time.weight = float(self.rewards.feet_air_time.weight) * 2.0
+            self.rewards.feet_air_time.weight = float(self.rewards.feet_air_time.weight) * 4.0
+
+        # (2) Crank stand_still_legs from -2.0 to -5.0. The 17400-iter run
+        #     accumulated -0.97 per episode from this term and the policy
+        #     simply ignored it — too cheap relative to +9 EE+height reward.
+        if hasattr(self.rewards, "stand_still_legs"):
+            self.rewards.stand_still_legs.weight = -4.0
+
+        # (3) Drop standing envs from 0.20 to 0.05. With 20% of envs being
+        #     "easy mode" (v_cmd=0, full reward for KMP pose), the mean
+        #     reward landscape rewarded standing-still. 5% retains some
+        #     standing supervision but no longer pays the global floor.
+        self.commands.base_velocity.rel_standing_envs = 0.10
+
+        # (4) Boost track_lin_vel_xy_exp weight to 5.0 (V3 default is 3.0).
+        #     The previous run got 1.58/3.0 — only ~50% of available reward.
+        #     A bigger ceiling on this term lifts the marginal value of
+        #     "actually walk" above the marginal value of "stand still."
+        if hasattr(self.rewards, "track_lin_vel_xy_exp"):
+            self.rewards.track_lin_vel_xy_exp.weight = 4.0
+
+        # --- Dump effective reward weights (helps trace inheritance) -------
+        # The reward weight you see in training logs is the result of every
+        # parent __post_init__ + this one. Printing them here removes the
+        # need to grep through the V1→V2→V3→V4 chain to find the live value.
+        print("\n=== HV1 V4 effective reward weights (post-inheritance) ===")
+        for _name in sorted(vars(self.rewards)):
+            _term = getattr(self.rewards, _name)
+            _w = getattr(_term, "weight", None)
+            if _w is not None:
+                print(f"  {_name:36s} = {_w:+.4f}")
+        print()
 
 
 @configclass

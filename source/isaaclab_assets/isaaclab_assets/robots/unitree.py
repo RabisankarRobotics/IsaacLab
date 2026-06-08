@@ -720,7 +720,7 @@ G1_INSPIRE_FTP_CFG.actuators["hands"] = ImplicitActuatorCfg(
 # ---------------------------------------------------------------------------
 HV1_2_URDF_PATH = (
     "/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/"
-    "urdf_mesh/hv1_2/hv1_2.urdf"
+    "urdf_mesh/hv1_2/hv1_2_without_ee/HV1_2_Without_Arms.urdf"
 )
 
 HV1_2_CFG = ArticulationCfg(
@@ -754,7 +754,6 @@ HV1_2_CFG = ArticulationCfg(
                     ".*_wrist_pitch_joint": 80.0,
                     ".*_wrist_yaw_joint": 80.0,
                     "head_pitch_joint": 80.0,
-                    "head_roll_joint": 80.0,
                     "head_yaw_joint": 80.0,
                 },
                 damping={
@@ -775,7 +774,6 @@ HV1_2_CFG = ArticulationCfg(
                     ".*_wrist_pitch_joint": 3.0,
                     ".*_wrist_yaw_joint": 3.0,
                     "head_pitch_joint": 3.0,
-                    "head_roll_joint": 3.0,
                     "head_yaw_joint": 3.0,
                 },
             ),
@@ -815,7 +813,6 @@ HV1_2_CFG = ArticulationCfg(
             ".*_wrist_pitch_joint": 0.0,
             ".*_wrist_yaw_joint": 0.0,
             "head_pitch_joint": 0.0,
-            "head_roll_joint": 0.0,
             "head_yaw_joint": 0.0,
         },
         joint_vel={".*": 0.0},
@@ -878,7 +875,6 @@ HV1_2_CFG = ArticulationCfg(
                 ".*_wrist_pitch_joint",
                 ".*_wrist_yaw_joint",
                 "head_pitch_joint",
-                "head_roll_joint",
                 "head_yaw_joint",
             ],
             effort_limit_sim=10.5,

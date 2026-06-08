@@ -73,3 +73,9 @@ tests/
 # TacSL sensor
 **/tactile_record/*
 **/gelsight_r15_data/*
+
+
+
+# Trained model artifacts — kept local, not tracked in git
+deploy/model/**/*.pt
+**/MUJOCO_LOG.TXT

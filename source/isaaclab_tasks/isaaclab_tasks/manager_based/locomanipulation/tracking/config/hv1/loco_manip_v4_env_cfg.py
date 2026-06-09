@@ -17,11 +17,18 @@ V4 differences vs V3:
   * Curriculum dropped — body-height tracking is enabled from iter 0. KMP
     makes height a kinematic constraint (already solved offline).
   * Walking-escape shaping (post 17400-iter standing-still run):
-      feet_air_time × 5  (was × 2 — too weak to dominate the standing pit)
-      stand_still_legs   = -5.0   (was -2.0 — robot ignored it)
-      rel_standing_envs  = 0.05   (was 0.20 — too fat a free-reward floor)
-      track_lin_vel_xy_exp.weight = 5.0  (was 3.0 — lifts marginal value
+      feet_air_time × 4  (was × 2 — too weak to dominate the standing pit)
+      stand_still_legs   = -4.0   (was -2.0 — robot ignored it)
+      rel_standing_envs  = 0.10   (was 0.20 — too fat a free-reward floor)
+      track_lin_vel_xy_exp.weight = 4.0  (was 3.0 — lifts marginal value
                                           of "actually walk" above standing)
+  * V4.1 standing-height fix (post 15k walking-good run):
+      rel_standing_envs  = 0.20   (was 0.10 — more "stand AND track height"
+                                   gradient; doesn't reopen the standing pit
+                                   because the rest of the shaping holds)
+      stand_still_legs joints = hip + ankle only (was hip + knee + ankle —
+                                   knees free to bend so robot can squat
+                                   to commanded height while standing)
 
 Train from scratch — do NOT warm-start from V3. V3 weights are tuned for
 "discover IK and dynamics simultaneously" and feeding them into V4 (where
@@ -33,6 +40,7 @@ iter-32000 (~9 cm → target <3 cm).
 from __future__ import annotations
 
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
 from isaaclab_tasks.manager_based.locomotion.velocity.config.hv1_velocity import mdp as custom_mdp
@@ -196,17 +204,31 @@ class HV1LocoManipV4EnvCfg(HV1LocoManipV3EnvCfg):
         if hasattr(self.rewards, "feet_air_time"):
             self.rewards.feet_air_time.weight = float(self.rewards.feet_air_time.weight) * 4.0
 
-        # (2) Crank stand_still_legs from -2.0 to -5.0. The 17400-iter run
-        #     accumulated -0.97 per episode from this term and the policy
-        #     simply ignored it — too cheap relative to +9 EE+height reward.
+        # (2) Crank stand_still_legs from -2.0 to -4.0, AND exclude knees
+        #     from the penalty. The base term applies to all leg joints (hip
+        #     + knee + ankle), which fights body-height tracking: matching a
+        #     low commanded height requires knee bend, but knee bend itself
+        #     was penalized -> robot stood at KMP-default height (~0.94) and
+        #     ignored the height command in standing envs. Keeping hip +
+        #     ankle ensures the robot still stands upright over its feet;
+        #     freeing the knee lets it squat to the commanded height.
         if hasattr(self.rewards, "stand_still_legs"):
             self.rewards.stand_still_legs.weight = -4.0
+            self.rewards.stand_still_legs.params["asset_cfg"] = SceneEntityCfg(
+                "robot",
+                joint_names=[
+                    "^(left|right)_hip_(yaw|pitch|roll)_joint$",
+                    "^(left|right)_ankle_(pitch|roll)_joint$",
+                ],
+            )
 
-        # (3) Drop standing envs from 0.20 to 0.05. With 20% of envs being
-        #     "easy mode" (v_cmd=0, full reward for KMP pose), the mean
-        #     reward landscape rewarded standing-still. 5% retains some
-        #     standing supervision but no longer pays the global floor.
-        self.commands.base_velocity.rel_standing_envs = 0.10
+        # (3) Standing-env share. 0.10 broke the standing-still pit (15k
+        #     run walks well) but starved the "track height while standing"
+        #     gradient — at deploy the robot stands at KMP-default height
+        #     and ignores the body-height command. Bumping to 0.20 doubles
+        #     the supervision for "stand AND match commanded height" without
+        #     re-creating a free-reward floor that disincentivizes walking.
+        self.commands.base_velocity.rel_standing_envs = 0.20
 
         # (4) Boost track_lin_vel_xy_exp weight to 5.0 (V3 default is 3.0).
         #     The previous run got 1.58/3.0 — only ~50% of available reward.

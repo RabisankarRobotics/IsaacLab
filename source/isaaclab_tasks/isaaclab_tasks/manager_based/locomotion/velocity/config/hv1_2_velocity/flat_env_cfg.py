@@ -176,7 +176,8 @@ class HV1_2VelocityRewardsCfg:
     # two feet. Zero when both feet step in the same rhythm.
     feet_airtime_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        weight=-1.0,
+        weight=-2.0,  # was -1.0 — the previous run still had limp-asymmetric
+                       # timing (-0.06 per step). Push it harder.
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link")},
     )
     # NEW: rewards swing-foot clearance — encourages a clean foot-lift arc
@@ -197,14 +198,19 @@ class HV1_2VelocityRewardsCfg:
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
-    # One-sided L1 "no-squat" penalty: zero when pelvis is at or above 0.92 m,
-    # linear in shortfall below. L1 (vs the previous L2 at weight -50) avoids
-    # the value-function blow-up when a falling env hits shortfall ≈ 0.8 m.
-    #   normal walk at 0.93 → 0 penalty
-    #   crouch at 0.84    → shortfall 0.08, penalty -0.8 (bigger than tracking gain)
-    #   fall at 0.10      → shortfall 0.82, penalty -8.2 (large but bounded)
-    base_height_below = RewTerm(
-        func=custom_mdp.base_height_below_target_l1,
+    # SYMMETRIC base-height penalty: pins pelvis to 0.92 m on both sides.
+    # The previous one-sided "no-squat" version (base_height_below_target_l1)
+    # only penalized below 0.92, so the limp policy at pelvis ~0.94 m was
+    # free — stilt leg straight = pelvis up = 0 penalty. With symmetric L2
+    # the limp now also pays:
+    #   pelvis 0.92 m (target, knees ~30° bend): 0
+    #   pelvis 0.95 m (stilt leg straight):      -10 * 0.0009 ≈ -0.009/step ⇒ ~-9/episode (subtle)
+    #   pelvis 0.85 m (deep squat):              -10 * 0.0049 ≈ -0.049/step ⇒ ~-49/episode
+    #   pelvis 0.80 m (collapse):                -10 * 0.0144 ≈ -0.144/step ⇒ ~-144/episode
+    # L2 is mild near target (allows natural ±3 cm bob essentially free),
+    # sharp on bigger deviations.
+    base_height_l2 = RewTerm(
+        func=mdp.base_height_l2,
         weight=-10.0,
         params={"target_height": 0.92},
     )

@@ -20,6 +20,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.noise import UniformNoiseCfg as Unoise
 
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 from isaaclab_tasks.manager_based.locomotion.velocity.velocity_env_cfg import (
@@ -72,27 +73,43 @@ ARM_TARGETS_PIN = {
 
 @configclass
 class HV1_2VelocityActionsCfg:
-    """Policy actions on legs only (12 of 32 joints), with a larger scale than
-    the standing task so it can actually lift its feet."""
+    """Policy actions on legs only (12 of 32 joints).
+
+    Scale 0.3 (was 0.5) — smaller per-step joint-target delta gives a
+    smoother, less jerky gait. Reference: H1/G1 use 0.5 (inherited from
+    parent) but their policies have base_lin_vel in obs; we removed it,
+    so tighter actions help stable convergence with less state info.
+    """
 
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=LEG_JOINTS,
-        scale=0.5,
+        scale=0.3,
         use_default_offset=True,
     )
 
 
 @configclass
 class HV1_2VelocityObservationsCfg:
+    """Policy observations match what a real HV1.2 robot can actually sense:
+    IMU (base_ang_vel + projected_gravity) and joint encoders. No base_lin_vel
+    — that would require a state estimator we don't have on hardware.
+    Per-term Unoise mimics real sensor noise so the trained policy is robust.
+    """
+
     @configclass
     class PolicyCfg(ObsGroup):
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
-        projected_gravity = ObsTerm(func=mdp.projected_gravity)
+        # IMU
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
+        projected_gravity = ObsTerm(
+            func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05)
+        )
+        # Commands (from operator, no sensor noise)
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel = ObsTerm(func=mdp.joint_vel_rel)
+        # Encoders
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
+        # Internal
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
@@ -198,19 +215,17 @@ class HV1_2VelocityRewardsCfg:
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
-    # SYMMETRIC base-height penalty: pins pelvis to 0.92 m on both sides.
-    # The previous one-sided "no-squat" version (base_height_below_target_l1)
-    # only penalized below 0.92, so the limp policy at pelvis ~0.94 m was
-    # free — stilt leg straight = pelvis up = 0 penalty. With symmetric L2
-    # the limp now also pays:
-    #   pelvis 0.92 m (target, knees ~30° bend): 0
-    #   pelvis 0.95 m (stilt leg straight):      -10 * 0.0009 ≈ -0.009/step ⇒ ~-9/episode (subtle)
-    #   pelvis 0.85 m (deep squat):              -10 * 0.0049 ≈ -0.049/step ⇒ ~-49/episode
-    #   pelvis 0.80 m (collapse):                -10 * 0.0144 ≈ -0.144/step ⇒ ~-144/episode
-    # L2 is mild near target (allows natural ±3 cm bob essentially free),
-    # sharp on bigger deviations.
-    base_height_l2 = RewTerm(
-        func=mdp.base_height_l2,
+    # One-sided L1 "no-squat" penalty: zero when pelvis is at or above 0.92 m,
+    # linear in shortfall below.
+    #   normal walk at 0.93     → 0 penalty
+    #   stance push-off at 0.96 → 0 penalty (allows natural pelvis lift)
+    #   crouch at 0.84          → shortfall 0.08, penalty -0.8
+    #   fall at 0.10            → shortfall 0.82, penalty -8.2 (large but bounded)
+    # Restored after symmetric L2 over-constrained the gait into slow-motion
+    # deep-knee walking — the policy was avoiding the natural up-bob during
+    # stance push-off because L2 punished any height > 0.92 as well.
+    base_height_below = RewTerm(
+        func=custom_mdp.base_height_below_target_l1,
         weight=-10.0,
         params={"target_height": 0.92},
     )

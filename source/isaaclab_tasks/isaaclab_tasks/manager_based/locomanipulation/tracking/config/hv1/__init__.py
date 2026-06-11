@@ -86,3 +86,49 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV4PPORunnerCfg",
     },
 )
+
+# V5 (HiWET world-frame): EE targets sampled in env-local world, episode-static.
+# Couples gait + reach — robot must navigate pelvis to reach far targets.
+# Reuses V4's KMP via runtime world→body transform inside the action class.
+gym.register(
+    id="Isaac-Tracking-LocoManipV5-HV1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_v5_env_cfg:HV1LocoManipV5EnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV5PPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Tracking-LocoManipV5-HV1-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_v5_env_cfg:HV1LocoManipV5EnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV5PPORunnerCfg",
+    },
+)
+
+# V5-H (HiWET hierarchical): Stage 2 commander trains on world-frame EE
+# targets, outputs Stage 1's command vector. Stage 1 (V4) is loaded JIT
+# inside the action class and frozen.
+gym.register(
+    id="Isaac-Tracking-LocoManipV5H-HV1-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_v5h_env_cfg:HV1LocoManipV5HEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV5HPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Isaac-Tracking-LocoManipV5H-HV1-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.loco_manip_v5h_env_cfg:HV1LocoManipV5HEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HV1LocoManipV5HPPORunnerCfg",
+    },
+)

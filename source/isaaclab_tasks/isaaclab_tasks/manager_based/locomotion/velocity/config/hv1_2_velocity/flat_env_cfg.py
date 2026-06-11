@@ -75,16 +75,19 @@ ARM_TARGETS_PIN = {
 class HV1_2VelocityActionsCfg:
     """Policy actions on legs only (12 of 32 joints).
 
-    Scale 0.3 (was 0.5) — smaller per-step joint-target delta gives a
-    smoother, less jerky gait. Reference: H1/G1 use 0.5 (inherited from
-    parent) but their policies have base_lin_vel in obs; we removed it,
-    so tighter actions help stable convergence with less state info.
+    Scale 0.5 — the standard locomotion scale from velocity_env_cfg.
+    We tried 0.3 (with base_lin_vel removed) for smoother gait, but the
+    policy diverged: smaller scale forces the actor to output 5/3×
+    larger raw values to reach the same joint target, and action_rate_l2
+    (which is computed on RAW actions, not scaled) exploded. Combined
+    with the obs change it caused full divergence (mean_reward 2.5,
+    action_std 2.7). Keep scale 0.5 here.
     """
 
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=LEG_JOINTS,
-        scale=0.3,
+        scale=0.5,
         use_default_offset=True,
     )
 
@@ -227,7 +230,7 @@ class HV1_2VelocityRewardsCfg:
     base_height_below = RewTerm(
         func=custom_mdp.base_height_below_target_l1,
         weight=-10.0,
-        params={"target_height": 0.92},
+        params={"target_height": 0.91},
     )
     # ---- effort / smoothness ----
     # Backed off from -0.005 — paired with the height-penalty rework, that

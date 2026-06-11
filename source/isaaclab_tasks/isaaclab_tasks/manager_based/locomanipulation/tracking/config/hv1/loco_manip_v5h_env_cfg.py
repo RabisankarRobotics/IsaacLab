@@ -207,7 +207,15 @@ class HV1LocoManipV5HObservationsCfg:
         )
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
-        actions = ObsTerm(func=mdp.last_action)
+        # CRITICAL: V4 was trained with `actions` = its OWN 28-D residual.
+        # In V5-H the env's action is 19-D (Stage 2), so reading
+        # env.action_manager.action directly would feed V4 the wrong dim
+        # (errors out at the first MLP layer 605x512). We use a custom obs
+        # that returns the last V4 residual stored on the action class.
+        actions = ObsTerm(
+            func=custom_mdp.v4_last_action_obs,
+            params={"action_term_name": "joint_pos"},
+        )
         left_ee_pose_command = ObsTerm(
             func=mdp.generated_commands, params={"command_name": "left_ee_pose"}
         )

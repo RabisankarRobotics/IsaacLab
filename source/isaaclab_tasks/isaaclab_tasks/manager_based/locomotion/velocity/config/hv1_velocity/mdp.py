@@ -991,6 +991,25 @@ def world_ee_position_error_masked_tanh(
     return fine * mask
 
 
+def v4_last_action_obs(
+    env: "ManagerBasedRLEnv",
+    action_term_name: str = "joint_pos",
+) -> torch.Tensor:
+    """Return the V4 (Stage 1) last residual as the "actions" obs for V4.
+
+    In V5-H the env's action manager stores the Stage 2 19-D action, not the
+    V4 28-D residual. But V4 was trained with `last_action` = V4 residual
+    (28-D). Feeding it the Stage 2 action would shift its input distribution
+    catastrophically (wrong dim → outright shape mismatch in the MLP).
+
+    The Stage 2 action class (`Stage2WrappedAction`) keeps `_v4_residual`
+    updated each step. This obs term reads it for V4's `actions` slot,
+    preserving V4's exact input contract.
+    """
+    term = env.action_manager.get_term(action_term_name)
+    return term.last_v4_residual
+
+
 def world_base_pose_obs(
     env: "ManagerBasedRLEnv",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -1035,6 +1054,12 @@ def modify_world_ee_distance_cap_on_success(
       * `error_metric_name` is whatever the WorldFramePoseCommand publishes;
         in our impl that's "position_error".
     """
+    # Guard: skip when no real sim steps have run yet (metric buffers are
+    # still zero-initialized -> they would falsely pass `< error_threshold`
+    # and trigger an immediate spurious widening on the very first call).
+    if env.common_step_counter < check_every_n_steps:
+        return float(getattr(env, "_curr_world_ee_r_max", 0.5))
+
     if env.common_step_counter % check_every_n_steps != 0:
         return float(getattr(env, "_curr_world_ee_r_max", 0.5))
 
@@ -1048,7 +1073,14 @@ def modify_world_ee_distance_cap_on_success(
             return float(getattr(env, "_curr_world_ee_r_max", 0.5))
         err_total = err if err_total is None else err_total + err
     avg_err = err_total / len(command_names)
-    frac_success = (avg_err < error_threshold).float().mean().item()
+    # Mask out envs whose metric is exactly 0 — they almost certainly just
+    # reset and haven't had a metric update yet. Counting them as success
+    # would also trigger a spurious widening.
+    valid = avg_err > 1e-6
+    if valid.float().mean().item() < 0.5:
+        # >half the envs are in "just reset" state — defer the check.
+        return float(getattr(env, "_curr_world_ee_r_max", 0.5))
+    frac_success = ((avg_err < error_threshold) & valid).float().sum().item() / valid.float().sum().item()
 
     r_max = getattr(env, "_curr_world_ee_r_max", None)
     if r_max is None:

@@ -178,9 +178,10 @@ class Stage2WrappedAction(JointPositionAction):
         # input validation and shape of self._raw_actions.
         return STAGE2_ACTION_DIM
 
-    @property
-    def raw_actions(self) -> torch.Tensor:
-        return self._stage2_action
+    # NOTE: do NOT override `raw_actions` here — the parent's property reads
+    # `self._raw_actions` which is sized (N, 19) thanks to the action_dim
+    # override above and is built BEFORE self._stage2_action exists. Our
+    # `self._stage2_action` is just a post-init alias to the same buffer.
 
     @property
     def processed_actions(self) -> torch.Tensor:

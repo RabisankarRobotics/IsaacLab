@@ -72,6 +72,38 @@ _ALPHA_CMD = "waist_regularization"
 STAGE2_ACTION_DIM = 19
 
 
+# ------------------------------------------------------------------
+# Action OFFSET + SCALE: action == 0 must map to a SAFE V4 command.
+# At init PPO emits ~N(0, 0.5²). Without offsets, V4 would see
+# body_height = 0 (full crouch) and EE targets at the body origin
+# (arms folded into torso) — robot falls in <1 s every episode.
+# Offsets below set zero-action to V4's nominal standing posture;
+# scales shrink the action's effective range to inside V4's training
+# distribution; clamps cap V4's input to its known-safe ranges.
+#
+# Values derived from V4 training ranges (loco_manip_env_cfg.py):
+#   * body_height range          = (0.85, 0.95)   -> mid 0.90
+#   * left  EE body-frame pos    = ([0.10, 0.50], [ 0.05,  0.45], [0.0, 0.55])
+#   * right EE body-frame pos    = ([0.10, 0.50], [-0.45, -0.05], [0.0, 0.55])
+#   * velocity (V4 PLAY clamp)   = x[-0.5,1.0], y[-0.4,0.4], wz[-1.0,1.0]
+#   * waist α (log-uniform)      = (0.1, 3.0)     -> neutral 1.0
+# ------------------------------------------------------------------
+_VEL_CLAMP_LO = (-0.5, -0.4, -1.0)
+_VEL_CLAMP_HI = ( 1.0,  0.4,  1.0)
+
+_H_OFFSET = 0.90
+_H_SCALE  = 0.05            # action ~N(0,0.25) -> h ~N(0.90, 0.0125), clamp [0.85,0.95]
+_H_LO, _H_HI = 0.85, 0.95
+
+_EE_POS_SCALE = 0.20        # action 0.5σ * 0.20 = 0.10 m std around the default
+_LEFT_POS_OFFSET  = (0.30,  0.25, 0.28)
+_RIGHT_POS_OFFSET = (0.30, -0.25, 0.28)
+
+_ALPHA_OFFSET = 1.0
+_ALPHA_SCALE  = 0.5
+_ALPHA_LO, _ALPHA_HI = 0.1, 3.0
+
+
 class Stage2WrappedAction(JointPositionAction):
     """Stage 2 action: writes commands, runs frozen V4 + KMP inline.
 
@@ -158,6 +190,13 @@ class Stage2WrappedAction(JointPositionAction):
         # --- 16-D KMP input scratch buffer ----------------------------------
         self._cmd_buf = torch.zeros(self.num_envs, 16, device=self.device)
 
+        # --- action offset / scale tensors (broadcast to (N, k)) ------------
+        # See module-level docstring block above the constants for rationale.
+        self._vel_lo = torch.tensor(_VEL_CLAMP_LO, device=self.device)
+        self._vel_hi = torch.tensor(_VEL_CLAMP_HI, device=self.device)
+        self._left_pos_offset  = torch.tensor(_LEFT_POS_OFFSET,  device=self.device)
+        self._right_pos_offset = torch.tensor(_RIGHT_POS_OFFSET, device=self.device)
+
         # --- command-term handles for write-back ----------------------------
         # Resolved lazily on first process_actions because some terms may not
         # exist yet at action manager construction time.
@@ -201,41 +240,44 @@ class Stage2WrappedAction(JointPositionAction):
         self._t_alpha = cm.get_term(_ALPHA_CMD)
         self._cmd_terms_bound = True
 
-    def _write_commands(self, u: torch.Tensor):
-        """Write the Stage 2 action `u` into V4's command buffers in-place.
+    def _process_action(self, u: torch.Tensor) -> torch.Tensor:
+        """Apply per-slot offset / scale / clamp to the raw Stage 2 action.
 
-        u layout: see STAGE2_ACTION_DIM block in module docstring.
+        Returns a (N, 19) "processed" command. V4 buffers AND the KMP both
+        consume this — if they disagree, q_prior (KMP) and V4's residual
+        track different references and the policy never learns.
+
+        Per slot: `cmd = clamp(u_slice * scale + offset, lo, hi)`.
+        Zero action -> safe V4 nominal command (see module-level constants).
         """
-        # base_velocity (3-D) — UniformVelocityCommand stores under `.vel_command_b`
-        # or similar. Patch its `.command` tensor wherever the term keeps it.
-        # In IsaacLab the canonical buffer is `vel_command_b` (a 3-D tensor).
-        if hasattr(self._t_base_velocity, "vel_command_b"):
-            self._t_base_velocity.vel_command_b[:] = u[:, 0:3]
-        else:
-            # Fall back to overwriting via the public command property's
-            # underlying tensor — not all CommandTerm impls expose this.
-            raise RuntimeError("base_velocity term layout unknown.")
+        u_proc = torch.empty_like(u)
+        # velocity (3-D)
+        u_proc[:, 0:3] = torch.clamp(u[:, 0:3], self._vel_lo, self._vel_hi)
+        # body_height (1-D)
+        u_proc[:, 3:4] = (u[:, 3:4] * _H_SCALE + _H_OFFSET).clamp(_H_LO, _H_HI)
+        # left EE pos (3-D) + quat (4-D, wxyz, qw biased to identity)
+        u_proc[:, 4:7] = u[:, 4:7] * _EE_POS_SCALE + self._left_pos_offset
+        l_quat_raw = u[:, 7:11].clone()
+        l_quat_raw[:, 0] = l_quat_raw[:, 0] + 1.0
+        u_proc[:, 7:11] = _safe_normalize_quat(l_quat_raw)
+        # right EE pos (3-D) + quat (4-D)
+        u_proc[:, 11:14] = u[:, 11:14] * _EE_POS_SCALE + self._right_pos_offset
+        r_quat_raw = u[:, 14:18].clone()
+        r_quat_raw[:, 0] = r_quat_raw[:, 0] + 1.0
+        u_proc[:, 14:18] = _safe_normalize_quat(r_quat_raw)
+        # waist α (1-D)
+        u_proc[:, 18:19] = (u[:, 18:19] * _ALPHA_SCALE + _ALPHA_OFFSET).clamp(_ALPHA_LO, _ALPHA_HI)
+        return u_proc
 
-        # body_height (1-D) — UniformScalarCommand has `_command` (N, 1).
-        self._t_body_height._command[:] = u[:, 3:4]
-
-        # left_ee_pose (7-D) — UniformPoseCommand has `pose_command_b` (N, 7) wxyz.
-        # Normalize the quat slot before writing.
-        l_pos = u[:, 4:7]
-        l_quat = u[:, 7:11]
-        l_quat = _safe_normalize_quat(l_quat)
-        self._t_left_ee.pose_command_b[:, 0:3] = l_pos
-        self._t_left_ee.pose_command_b[:, 3:7] = l_quat
-
-        # right_ee_pose (7-D)
-        r_pos = u[:, 11:14]
-        r_quat = u[:, 14:18]
-        r_quat = _safe_normalize_quat(r_quat)
-        self._t_right_ee.pose_command_b[:, 0:3] = r_pos
-        self._t_right_ee.pose_command_b[:, 3:7] = r_quat
-
-        # waist_regularization (1-D)
-        self._t_alpha._command[:] = u[:, 18:19]
+    def _write_commands(self, u_proc: torch.Tensor):
+        """Write the processed Stage 2 command into V4's command buffers."""
+        self._t_base_velocity.vel_command_b[:] = u_proc[:, 0:3]
+        self._t_body_height._command[:] = u_proc[:, 3:4]
+        self._t_left_ee.pose_command_b[:, 0:3] = u_proc[:, 4:7]
+        self._t_left_ee.pose_command_b[:, 3:7] = u_proc[:, 7:11]
+        self._t_right_ee.pose_command_b[:, 0:3] = u_proc[:, 11:14]
+        self._t_right_ee.pose_command_b[:, 3:7] = u_proc[:, 14:18]
+        self._t_alpha._command[:] = u_proc[:, 18:19]
 
     def _read_v4_obs(self) -> torch.Tensor:
         """Pull the `v4_actor` observation group from the env's obs manager.
@@ -286,21 +328,25 @@ class Stage2WrappedAction(JointPositionAction):
         # entirely so we copy here.
         self._stage2_action[:] = actions
 
-        # 1) Write Stage 2 output into V4's command buffers.
-        self._write_commands(self._stage2_action)
+        # 1) Apply per-slot offset / scale / clamp ONCE. Both the V4 command
+        #    buffers and the KMP must consume the same vector.
+        u_proc = self._process_action(self._stage2_action)
 
-        # 2) Read V4 obs (1-step-lagged commands inside).
+        # 2) Write processed command into V4's command buffers.
+        self._write_commands(u_proc)
+
+        # 3) Read V4 obs (1-step-lagged commands inside).
         v4_obs = self._read_v4_obs()
 
-        # 3) Run frozen V4 actor (-> 28-D residual).
+        # 4) Run frozen V4 actor (-> 28-D residual).
         with torch.no_grad():
             residual = self._v4_policy(v4_obs)
         self._v4_residual[:] = residual
 
-        # 4) Run frozen KMP on FRESH commands.
-        q_prior_action = self._kmp_forward(self._stage2_action)
+        # 5) Run frozen KMP on FRESH processed command.
+        q_prior_action = self._kmp_forward(u_proc)
 
-        # 5) q_target = q_prior + residual * per_joint_scale
+        # 6) q_target = q_prior + residual * per_joint_scale
         self._processed_actions = q_prior_action + residual * self._scale
 
         if self.cfg.clip is not None:

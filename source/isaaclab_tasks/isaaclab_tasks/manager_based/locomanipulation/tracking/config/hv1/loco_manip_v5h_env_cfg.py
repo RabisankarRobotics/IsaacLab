@@ -364,8 +364,13 @@ class HV1LocoManipV5HEnvCfg(HV1LocoManipV2EnvCfg):
         _RESAMPLE_INFTY = (1e6, 1e6)
         if hasattr(self.commands, "left_ee_pose") and self.commands.left_ee_pose is not None:
             self.commands.left_ee_pose.resampling_time_range = _RESAMPLE_INFTY
+            # body-frame EE marker is Stage 2's raw output — it flicker-updates
+            # every step. Hide it so only the world-frame goals (red / blue) are
+            # visible to the user.
+            self.commands.left_ee_pose.debug_vis = False
         if hasattr(self.commands, "right_ee_pose") and self.commands.right_ee_pose is not None:
             self.commands.right_ee_pose.resampling_time_range = _RESAMPLE_INFTY
+            self.commands.right_ee_pose.debug_vis = False
 
         # Velocity command: stop random sampling — Stage 2 writes it.
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
@@ -394,6 +399,12 @@ class HV1LocoManipV5HEnvCfg(HV1LocoManipV2EnvCfg):
         # debug_vis = True draws a colored sphere at the target world position
         # in every env. Left = RED, right = BLUE. Each command term gets its
         # own USD prim path so they don't overwrite each other's marker.
+        # theta = azimuth measured CCW from +X (forward). Restrict BOTH arms to
+        # the front hemisphere so the two targets never live in opposite
+        # directions (previous version had LEFT sweep up to +135° and RIGHT
+        # down to -135°, producing red-front + blue-back configurations the
+        # robot physically cannot face simultaneously). Side bias keeps the
+        # respective arm on its own side of the body.
         self.commands.world_left_ee_pose = custom_mdp.WorldFramePoseCommandCfg(
             asset_name="robot",
             body_name=LEFT_EE_BODY,
@@ -403,7 +414,7 @@ class HV1LocoManipV5HEnvCfg(HV1LocoManipV2EnvCfg):
             anchor_z=0.94,
             ranges=custom_mdp.WorldFramePoseCommandCfg.Ranges(
                 r=(0.1, 0.5),  # Stage A — curriculum widens
-                theta=(-math.pi / 4, 3 * math.pi / 4),
+                theta=(-math.pi / 6, math.pi / 2),  # slight right-of-forward → left
                 phi=(-math.pi / 6, math.pi / 3),
                 roll=(-0.3, 0.3),
                 pitch=(-0.3, 0.3),
@@ -420,7 +431,7 @@ class HV1LocoManipV5HEnvCfg(HV1LocoManipV2EnvCfg):
             anchor_z=0.94,
             ranges=custom_mdp.WorldFramePoseCommandCfg.Ranges(
                 r=(0.1, 0.5),
-                theta=(-3 * math.pi / 4, math.pi / 4),
+                theta=(-math.pi / 2, math.pi / 6),  # right → slight left-of-forward
                 phi=(-math.pi / 6, math.pi / 3),
                 roll=(-0.3, 0.3),
                 pitch=(-0.3, 0.3),

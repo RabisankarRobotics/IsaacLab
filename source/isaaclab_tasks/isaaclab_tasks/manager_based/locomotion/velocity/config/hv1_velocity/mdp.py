@@ -579,6 +579,138 @@ class WorldFramePoseCommandCfg(CommandTermCfg):
     )
 
 
+# ---------------------------------------------------------------------------
+# Bimanual coupled world-frame EE command
+# ---------------------------------------------------------------------------
+class BimanualWorldFramePoseCommand(WorldFramePoseCommand):
+    """Two-arm coupled world-frame EE pose.
+
+    Independent per-arm sampling (`WorldFramePoseCommand`) can place the LEFT
+    and RIGHT targets in arrangements wider than the robot's arm span, making
+    the pair physically impossible — the policy then settles on "favor one
+    arm, sacrifice the other" and one error stays stuck.
+
+    This class samples ONE world "task center" per episode (master only) and
+    places each arm's target as a small Cartesian offset from that center.
+    Max L-to-R distance is bounded by `2 * max_offset`, so every pair is
+    reachable.
+
+    Master vs slave:
+      * cfg.linked_command_name = None    -> MASTER. Samples the center
+        spherically from (anchor_xy, anchor_z) using `cfg.ranges.r/theta/phi`
+        (same convention as the parent class), stores it on
+        `self.episode_center_w`. Curriculum widens master.r_max.
+      * cfg.linked_command_name = "<other-bimanual-term-name>" -> SLAVE.
+        Reads the master's episode_center_w each resample; its own
+        `cfg.ranges.r/theta/phi` are ignored.
+
+    Both master and slave then sample their per-arm offset from
+    `cfg.arm_offset_ranges` (Cartesian, env-local world axes) and write
+    `pose_command_world = center + arm_offset`.
+
+    Resampling order: the CommandManager processes terms in cfg-declaration
+    order. Make sure the master is declared BEFORE the slave so the slave
+    sees a fresh center on the same reset tick.
+    """
+
+    cfg: "BimanualWorldFramePoseCommandCfg"
+
+    def __init__(self, cfg: "BimanualWorldFramePoseCommandCfg", env: "ManagerBasedRLEnv"):
+        super().__init__(cfg, env)
+        # Shared center per env. Only the MASTER writes to this; the SLAVE
+        # reads from the master's instance. Sized on every term so attribute
+        # lookups don't crash if accessed off-master.
+        self.episode_center_w = torch.zeros(self.num_envs, 3, device=self.device)
+
+    @property
+    def is_master(self) -> bool:
+        return self.cfg.linked_command_name is None
+
+    def _read_center(self, env_ids: Sequence[int]) -> torch.Tensor:
+        """Return the (N_env_ids, 3) shared center for these envs."""
+        if self.is_master:
+            return self.episode_center_w[env_ids]
+        linked = self._env.command_manager.get_term(self.cfg.linked_command_name)
+        if not hasattr(linked, "episode_center_w"):
+            raise RuntimeError(
+                f"linked_command_name='{self.cfg.linked_command_name}' is not a "
+                f"BimanualWorldFramePoseCommand (no episode_center_w attribute)."
+            )
+        return linked.episode_center_w[env_ids]
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        n = len(env_ids)
+        device = self.device
+        cfg = self.cfg
+
+        # --- MASTER: sample shared center spherically around anchor ---------
+        if self.is_master:
+            r = torch.empty(n, device=device).uniform_(self._r_min, self._r_max)
+            theta = torch.empty(n, device=device).uniform_(*cfg.ranges.theta)
+            phi = torch.empty(n, device=device).uniform_(*cfg.ranges.phi)
+            ax, ay = cfg.anchor_xy
+            az = cfg.anchor_z
+            cos_phi = torch.cos(phi)
+            self.episode_center_w[env_ids, 0] = ax + r * torch.cos(theta) * cos_phi
+            self.episode_center_w[env_ids, 1] = ay + r * torch.sin(theta) * cos_phi
+            self.episode_center_w[env_ids, 2] = az + r * torch.sin(phi)
+
+        # --- BOTH: per-arm offset (Cartesian box around shared center) -----
+        center = self._read_center(env_ids)  # (n, 3)
+        ox = torch.empty(n, device=device).uniform_(*cfg.arm_offset_ranges.x)
+        oy = torch.empty(n, device=device).uniform_(*cfg.arm_offset_ranges.y)
+        oz = torch.empty(n, device=device).uniform_(*cfg.arm_offset_ranges.z)
+        self.pose_command_world[env_ids, 0] = center[:, 0] + ox
+        self.pose_command_world[env_ids, 1] = center[:, 1] + oy
+        self.pose_command_world[env_ids, 2] = center[:, 2] + oz
+
+        # --- Orientation: uniform euler (independent per arm — small range) -
+        euler = torch.empty(n, 3, device=device)
+        euler[:, 0].uniform_(*cfg.ranges.roll)
+        euler[:, 1].uniform_(*cfg.ranges.pitch)
+        euler[:, 2].uniform_(*cfg.ranges.yaw)
+        quat = quat_from_euler_xyz(euler[:, 0], euler[:, 1], euler[:, 2])
+        self.pose_command_world[env_ids, 3:7] = quat_unique(quat)
+
+    def set_distance_range(self, r_min: float, r_max: float):
+        """Curriculum hook. Only meaningful on the MASTER (slave reads center
+        from master), so the slave's call is a no-op."""
+        if self.is_master:
+            super().set_distance_range(r_min, r_max)
+
+
+@configclass
+class BimanualWorldFramePoseCommandCfg(WorldFramePoseCommandCfg):
+    """Cfg for `BimanualWorldFramePoseCommand`.
+
+    See the class docstring for master/slave semantics. Both LEFT and RIGHT
+    instances use this cfg; the only required difference is
+    `linked_command_name` (None on master, the master's name on slave) and the
+    per-axis `arm_offset_ranges.y` sign (LEFT positive, RIGHT negative).
+    """
+
+    @configclass
+    class ArmOffsetRanges:
+        """Per-axis offset from the shared episode center (env-local world m)."""
+        x: tuple[float, float] = (-0.15, 0.15)
+        y: tuple[float, float] = MISSING  # asymmetric per arm
+        z: tuple[float, float] = (-0.15, 0.15)
+
+    class_type: type = BimanualWorldFramePoseCommand
+
+    linked_command_name: str | None = None
+    """If None this term is the MASTER and samples a fresh shared center each
+    episode. If set to another `BimanualWorldFramePoseCommand`'s name, this
+    term is the SLAVE and reads the center from that term (its own r/theta/phi
+    ranges are ignored)."""
+
+    arm_offset_ranges: ArmOffsetRanges = MISSING
+    """Per-axis offset from the shared center. Bounds (per-axis spread) define
+    the per-arm reachable region around the task center. LEFT.y_range should
+    be positive (e.g. (+0.05, +0.30)); RIGHT.y_range negative. Max L-R
+    distance ≤ 2 * max(|offset|)."""
+
+
 def world_ee_position_command_error(
     env: "ManagerBasedRLEnv",
     command_name: str,

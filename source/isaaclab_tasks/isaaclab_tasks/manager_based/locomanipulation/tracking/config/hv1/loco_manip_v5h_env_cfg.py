@@ -399,44 +399,64 @@ class HV1LocoManipV5HEnvCfg(HV1LocoManipV2EnvCfg):
         # debug_vis = True draws a colored sphere at the target world position
         # in every env. Left = RED, right = BLUE. Each command term gets its
         # own USD prim path so they don't overwrite each other's marker.
-        # theta = azimuth measured CCW from +X (forward). Restrict BOTH arms to
-        # the front hemisphere so the two targets never live in opposite
-        # directions (previous version had LEFT sweep up to +135° and RIGHT
-        # down to -135°, producing red-front + blue-back configurations the
-        # robot physically cannot face simultaneously). Side bias keeps the
-        # respective arm on its own side of the body.
-        self.commands.world_left_ee_pose = custom_mdp.WorldFramePoseCommandCfg(
+        # Bimanual coupled sampling: ONE shared "task center" per episode,
+        # each arm sampled as a small offset from that center. Max L-R
+        # distance ≤ 2*max(|offset.y|) = 0.60 m, always inside arm span (~1 m).
+        # Eliminates impossible target pairs the policy would learn to
+        # half-solve by favoring one arm (the iter-2280 right-arm-stuck case).
+        #
+        # LEFT is the MASTER — it samples the shared center spherically from
+        # (anchor_xy, anchor_z) using ranges.r/theta/phi, then adds LEFT's own
+        # arm offset. Curriculum's `set_distance_range` controls master's r.
+        #
+        # RIGHT is the SLAVE — reads the center from LEFT, adds RIGHT's own
+        # arm offset. Its ranges.r/theta/phi are dummy values (ignored).
+        # DECLARATION ORDER MATTERS: LEFT must come first so it resamples
+        # before RIGHT on each episode reset.
+        self.commands.world_left_ee_pose = custom_mdp.BimanualWorldFramePoseCommandCfg(
             asset_name="robot",
             body_name=LEFT_EE_BODY,
             resampling_time_range=_RESAMPLE_INFTY,
             debug_vis=True,
-            anchor_xy=(0.0, 0.2),
+            anchor_xy=(0.0, 0.0),  # shared center centered on robot midline
             anchor_z=0.94,
-            ranges=custom_mdp.WorldFramePoseCommandCfg.Ranges(
-                r=(0.1, 0.5),  # Stage A — curriculum widens
-                theta=(-math.pi / 6, math.pi / 2),  # slight right-of-forward → left
-                phi=(-math.pi / 6, math.pi / 3),
+            ranges=custom_mdp.BimanualWorldFramePoseCommandCfg.Ranges(
+                r=(0.1, 0.5),  # how far the task center is from robot
+                theta=(-math.pi / 3, math.pi / 3),  # 120° front cone
+                phi=(-math.pi / 12, math.pi / 4),   # slight below to slight above
                 roll=(-0.3, 0.3),
                 pitch=(-0.3, 0.3),
                 yaw=(-0.3, 0.3),
             ),
+            arm_offset_ranges=custom_mdp.BimanualWorldFramePoseCommandCfg.ArmOffsetRanges(
+                x=(-0.15, 0.15),
+                y=(0.05, 0.30),   # LEFT arm sits on +y side of the center
+                z=(-0.15, 0.15),
+            ),
+            linked_command_name=None,  # MASTER
             goal_pose_visualizer_cfg=_LEFT_GOAL_MARKER,
         )
-        self.commands.world_right_ee_pose = custom_mdp.WorldFramePoseCommandCfg(
+        self.commands.world_right_ee_pose = custom_mdp.BimanualWorldFramePoseCommandCfg(
             asset_name="robot",
             body_name=RIGHT_EE_BODY,
             resampling_time_range=_RESAMPLE_INFTY,
             debug_vis=True,
-            anchor_xy=(0.0, -0.2),
+            anchor_xy=(0.0, 0.0),  # unused on slave
             anchor_z=0.94,
-            ranges=custom_mdp.WorldFramePoseCommandCfg.Ranges(
-                r=(0.1, 0.5),
-                theta=(-math.pi / 2, math.pi / 6),  # right → slight left-of-forward
-                phi=(-math.pi / 6, math.pi / 3),
+            ranges=custom_mdp.BimanualWorldFramePoseCommandCfg.Ranges(
+                r=(0.0, 0.0),       # ignored — slave reads center from master
+                theta=(0.0, 0.0),
+                phi=(0.0, 0.0),
                 roll=(-0.3, 0.3),
                 pitch=(-0.3, 0.3),
                 yaw=(-0.3, 0.3),
             ),
+            arm_offset_ranges=custom_mdp.BimanualWorldFramePoseCommandCfg.ArmOffsetRanges(
+                x=(-0.15, 0.15),
+                y=(-0.30, -0.05),  # RIGHT arm sits on -y side of the center
+                z=(-0.15, 0.15),
+            ),
+            linked_command_name="world_left_ee_pose",  # SLAVE
             goal_pose_visualizer_cfg=_RIGHT_GOAL_MARKER,
         )
 
@@ -484,19 +504,19 @@ class HV1LocoManipV5HEnvCfg_PLAY(HV1LocoManipV5HEnvCfg):
         self.scene.env_spacing = 6.0
         self.observations.policy.enable_corruption = False
         self.observations.critic.enable_corruption = False
-        # PLAY ranges must STAY REACHABLE — otherwise the policy looks broken
-        # while doing the right thing. Match the current training frontier
-        # (curriculum stuck at r_max=0.5 as of iter 2280); allow up to 1.0 m
-        # to show extrapolation. Tighten phi to keep targets below the robot's
-        # standing height (≈1.5 m): at r=1.0, phi=+30° -> z ≈ 1.44 m. The
-        # training phi=(-π/6, π/3) at r=3.0 produces z > 3 m which the robot
-        # physically cannot reach -> avoided.
-        self.commands.world_left_ee_pose.ranges.r = (0.3, 1.0)
-        self.commands.world_right_ee_pose.ranges.r = (0.3, 1.0)
-        self.commands.world_left_ee_pose.ranges.phi = (-math.pi / 12, math.pi / 6)
-        self.commands.world_right_ee_pose.ranges.phi = (-math.pi / 12, math.pi / 6)
-        # theta inherited from training -> already restricted to front
-        # hemisphere with LEFT bias / RIGHT bias respectively.
+        # PLAY uses the EXACT training sampling distribution so you can
+        # visually verify (a) targets are diverse, (b) LEFT/RIGHT pair stays
+        # within arm span (coupled via shared episode center).
+        # All ranges inherited from training:
+        #   master.r       = (0.1, 0.5)
+        #   master.theta   = (-π/3, π/3)
+        #   master.phi     = (-π/12, π/4)
+        #   arm_offset.y   = ±(0.05, 0.30)  -> max L-R distance ≤ 0.60 m
+        # Slave ignores its own r/theta/phi (reads center from master).
+        # Resample every 6 s so you see ~2 distinct target pairs per
+        # 15 s episode without having to wait for env resets.
+        self.commands.world_left_ee_pose.resampling_time_range = (6.0, 6.0)
+        self.commands.world_right_ee_pose.resampling_time_range = (6.0, 6.0)
         self.events.push_robot.interval_range_s = (3.0, 5.0)
         self.events.push_robot.params = {
             "velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}

@@ -484,9 +484,19 @@ class HV1LocoManipV5HEnvCfg_PLAY(HV1LocoManipV5HEnvCfg):
         self.scene.env_spacing = 6.0
         self.observations.policy.enable_corruption = False
         self.observations.critic.enable_corruption = False
-        # PLAY uses Stage-C-ish bounds so the policy is exercised.
-        self.commands.world_left_ee_pose.ranges.r = (0.3, 3.0)
-        self.commands.world_right_ee_pose.ranges.r = (0.3, 3.0)
+        # PLAY ranges must STAY REACHABLE — otherwise the policy looks broken
+        # while doing the right thing. Match the current training frontier
+        # (curriculum stuck at r_max=0.5 as of iter 2280); allow up to 1.0 m
+        # to show extrapolation. Tighten phi to keep targets below the robot's
+        # standing height (≈1.5 m): at r=1.0, phi=+30° -> z ≈ 1.44 m. The
+        # training phi=(-π/6, π/3) at r=3.0 produces z > 3 m which the robot
+        # physically cannot reach -> avoided.
+        self.commands.world_left_ee_pose.ranges.r = (0.3, 1.0)
+        self.commands.world_right_ee_pose.ranges.r = (0.3, 1.0)
+        self.commands.world_left_ee_pose.ranges.phi = (-math.pi / 12, math.pi / 6)
+        self.commands.world_right_ee_pose.ranges.phi = (-math.pi / 12, math.pi / 6)
+        # theta inherited from training -> already restricted to front
+        # hemisphere with LEFT bias / RIGHT bias respectively.
         self.events.push_robot.interval_range_s = (3.0, 5.0)
         self.events.push_robot.params = {
             "velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}

@@ -794,7 +794,7 @@ HV1_2_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.98),
+        pos=(0.0, 0.0, 0.96),
         joint_pos={
             ".*_hip_yaw_joint": 0.0,
             ".*_hip_roll_joint": 0.0,

@@ -180,12 +180,15 @@ class HV1_2VelocityRewardsCfg:
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
-            "threshold": 0.3,
+            "threshold": 0.4,
         },
     )
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.1,  # was -1.0; G1 uses -0.1. Still anti-shuffle.
+        weight=-0.5,  # G1 uses -0.1 (too weak for HV1.2's heavier feet),
+                      # HV1's working config uses -1.0. -0.5 is a measured
+                      # midpoint that suppresses shuffling without forcing
+                      # the policy to lock the support foot.
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*ankle_roll_link"),
@@ -217,7 +220,7 @@ class HV1_2VelocityRewardsCfg:
     # ---- stability ----
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
     # One-sided L1 "no-squat" penalty: zero when pelvis is at or above 0.92 m,
     # linear in shortfall below.
     #   normal walk at 0.93     → 0 penalty
@@ -230,7 +233,7 @@ class HV1_2VelocityRewardsCfg:
     base_height_below = RewTerm(
         func=custom_mdp.base_height_below_target_l1,
         weight=-10.0,
-        params={"target_height": 0.91},
+        params={"target_height": 0.92},
     )
     # ---- effort / smoothness ----
     # Backed off from -0.005 — paired with the height-penalty rework, that
@@ -239,8 +242,12 @@ class HV1_2VelocityRewardsCfg:
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-5.0e-7)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.003)
     # ---- safety ----
-    is_alive = RewTerm(func=mdp.is_alive, weight=0.15)
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    # is_alive / termination_penalty softened (0.15 / -200 → 0.05 / -100) to
+    # match HV1's working config. The large -200 termination spike was inflating
+    # value-target variance whenever an env fell, which previously contributed
+    # to the policy-collapse failure mode after the obs+scale change.
+    is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-1.0,

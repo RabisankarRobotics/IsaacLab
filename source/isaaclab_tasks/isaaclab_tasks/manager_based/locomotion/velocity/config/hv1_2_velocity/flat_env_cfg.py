@@ -180,12 +180,16 @@ class HV1_2VelocityRewardsCfg:
     # (smooth swing). Reference: Unitree G1 rough_env_cfg uses weight=0.25.
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=1.0,  # was 1.0 — let velocity tracking shape the gait, this
-                      # is now a tiebreaker for single-stance.
+        weight=1.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link"),
-            "threshold": 0.4,
+            # Threshold 0.4 → 0.3 s. At 0.4 s the reward saturates only at long
+            # swings, so the policy adopted a slow-cadence gait that also gave
+            # hip_yaw room to arc outward during the leisurely swing. 0.3 s
+            # gives full reward at a brisker step rhythm — directly tightens
+            # cadence AND removes the time-window for the yaw arc.
+            "threshold": 0.3,
         },
     )
     feet_slide = RewTerm(
@@ -219,7 +223,12 @@ class HV1_2VelocityRewardsCfg:
         weight=0.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "target_height": 0.10,
+            # target_height 0.10 → 0.07 m. Policy was reliably hitting 10 cm
+            # which makes the gait look high-lift / slow-motion and gives more
+            # time for hip_yaw to drift outward. 7 cm clearance is still safe
+            # over flat ground and shortens the swing arc — both visual
+            # speed-up and a smaller hip_yaw deviation window.
+            "target_height": 0.07,
             "std": 0.05,
             "tanh_mult": 2.0,
         },
@@ -285,6 +294,17 @@ class HV1_2VelocityRewardsCfg:
                         # policy was using for "free" foot clearance. -0.5 was
                         # too tight (locked hips), -0.2 too loose (visible arc),
                         # -0.35 is the measured middle ground.
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
+    )
+    # Directly penalize hip_yaw VELOCITY. The deviation-L1 penalty fights the
+    # outward-arc behavior on a per-step "where is the joint" basis, but the
+    # cycling motion (neutral → outward during swing → neutral on touchdown)
+    # is fundamentally a velocity pattern. Adding joint_vel_l2 hits the rapid
+    # back-and-forth directly without raising the static deviation cost
+    # further (which would risk re-locking yaw tracking).
+    joint_vel_hip_yaw = RewTerm(
+        func=mdp.joint_vel_l2,
+        weight=-0.05,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
     joint_deviation_hip_roll = RewTerm(

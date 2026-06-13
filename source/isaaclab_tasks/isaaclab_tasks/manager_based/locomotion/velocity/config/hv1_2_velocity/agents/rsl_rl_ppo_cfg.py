@@ -15,10 +15,11 @@ class HV1_2VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "hv1_2_velocity_flat"
 
     policy = RslRlPpoActorCriticCfg(
-        # Softer exploration: previous run diverged at iter 2315 with action_std
-        # ballooning to 2.41 and value loss → inf. 0.8 keeps initial noise
-        # informative without runaway scale.
-        init_noise_std=0.8,
+        # Softer exploration: previous run hit action_std=2.66 at iter 6673 with
+        # asymmetric walking and no yaw tracking. Starting at 0.5 (vs 0.8) gives
+        # PPO less std-headroom to grow into, paired with reduced entropy_coef
+        # below to discourage the runaway-exploration regime.
+        init_noise_std=0.5,
         # Observation normalization on actor + critic is the canonical PPO
         # stability mechanism for high-dim obs. Was OFF in the run that diverged;
         # raw joint_vel spikes during near-falls fed unnormalized into the actor's
@@ -33,7 +34,11 @@ class HV1_2VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,
+        # Halved 0.01 → 0.005. Previous run let action_std grow to 2.66 because
+        # the entropy bonus made high-noise policies look attractive even when
+        # they tracked velocity poorly. Lower coef means PPO drops std as soon
+        # as a more deterministic policy gives better velocity reward.
+        entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
         # Halved from 1e-3 — slower per-step gradient drift, reduces the chance

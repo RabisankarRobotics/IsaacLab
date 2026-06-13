@@ -167,7 +167,12 @@ class HV1_2VelocityRewardsCfg:
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
         weight=1.0,
-        params={"command_name": "base_velocity", "std": 0.5},
+        # std widened 0.5 → 1.0. Previous run had error_vel_yaw=2.42 rad/s on a
+        # ±1 command — exp(-(2.42/0.5)²) ≈ 0, so the gradient on yaw vanished
+        # and the policy never learned to turn. With std=1.0 the reward stays
+        # measurable while error is in the 1–2 rad/s range, giving PPO signal
+        # to actually shrink yaw error.
+        params={"command_name": "base_velocity", "std": 1.0},
     )
     # ---- gait: keep the bipedal single-stance reward (it got the robot
     # stepping) but dial weights down to G1-style values and ADD gait-shape
@@ -199,8 +204,10 @@ class HV1_2VelocityRewardsCfg:
     # two feet. Zero when both feet step in the same rhythm.
     feet_airtime_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        weight=-2.0,  # was -1.0 — the previous run still had limp-asymmetric
-                       # timing (-0.06 per step). Push it harder.
+        weight=-5.0,  # was -2.0 — at iter 6673 the episode-reward for this term
+                       # was still -0.15, i.e. asymmetric stepping persisted
+                       # because other reward terms dominated. -5.0 makes it
+                       # large enough to actually shape symmetric cadence.
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll_link")},
     )
     # NEW: rewards swing-foot clearance — encourages a clean foot-lift arc
@@ -272,7 +279,10 @@ class HV1_2VelocityRewardsCfg:
     #     already prevents the bad outcome (legs crossing or splaying too far).
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.5,
+        weight=-0.2,  # was -0.5 — too tight; combined with the broken yaw
+                       # tracking gradient, the policy locked hip_yaw near 0
+                       # and couldn't turn. -0.2 still discourages duck-foot
+                       # drift but lets the policy use hip_yaw on yaw commands.
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
     joint_deviation_hip_roll = RewTerm(
@@ -302,7 +312,11 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # ---------------- commands: walking ranges ---------------------------
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
+        # Narrowed ±1.0 → ±0.5 rad/s. With std=1.0 on track_ang_vel_z_exp,
+        # a ±0.5 command is well within the reward's "learnable" range
+        # (exp(-(0.5/1.0)²) ≈ 0.78). After the policy converges on this range
+        # we can widen back to ±1.0 in a second-stage curriculum run.
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
         self.commands.base_velocity.ranges.heading = (-3.14, 3.14)
 
         # ---------------- domain randomization on the base link --------------

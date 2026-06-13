@@ -279,10 +279,12 @@ class HV1_2VelocityRewardsCfg:
     #     already prevents the bad outcome (legs crossing or splaying too far).
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.2,  # was -0.5 — too tight; combined with the broken yaw
-                       # tracking gradient, the policy locked hip_yaw near 0
-                       # and couldn't turn. -0.2 still discourages duck-foot
-                       # drift but lets the policy use hip_yaw on yaw commands.
+        weight=-0.35,  # was -0.2 — yaw tracking works now (err_vel_yaw 0.76 on
+                        # std=1.0 → headroom), so we can stiffen the deviation
+                        # back up to suppress the swing-leg outward-yaw arc the
+                        # policy was using for "free" foot clearance. -0.5 was
+                        # too tight (locked hips), -0.2 too loose (visible arc),
+                        # -0.35 is the measured middle ground.
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
     joint_deviation_hip_roll = RewTerm(

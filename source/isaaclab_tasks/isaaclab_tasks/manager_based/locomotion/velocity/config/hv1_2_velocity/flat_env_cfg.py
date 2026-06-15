@@ -294,12 +294,12 @@ class HV1_2VelocityRewardsCfg:
     #     already prevents the bad outcome (legs crossing or splaying too far).
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.35,  # was -0.2 — yaw tracking works now (err_vel_yaw 0.76 on
-                        # std=1.0 → headroom), so we can stiffen the deviation
-                        # back up to suppress the swing-leg outward-yaw arc the
-                        # policy was using for "free" foot clearance. -0.5 was
-                        # too tight (locked hips), -0.2 too loose (visible arc),
-                        # -0.35 is the measured middle ground.
+        weight=-0.45,  # was -0.35. After adding knee_too_straight the policy
+                        # widened the effective foot stance via outward hip-yaw
+                        # to keep lateral balance under the new bent-knee load
+                        # chain. Yaw-tracking reward = 0.85 with err 0.71 rad/s
+                        # → plenty of headroom for a stiffer static penalty
+                        # without re-locking ang-vel tracking.
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
     # Directly penalize hip_yaw VELOCITY. The deviation-L1 penalty fights the
@@ -310,7 +310,12 @@ class HV1_2VelocityRewardsCfg:
     # further (which would risk re-locking yaw tracking).
     joint_vel_hip_yaw = RewTerm(
         func=mdp.joint_vel_l2,
-        weight=-0.05,
+        weight=-0.1,  # was -0.05. joint_vel_hip_yaw rose from -0.0352 to
+                       # -0.0475 after knee_too_straight was added — the
+                       # swing-arc cycling came back along with the static
+                       # outward drift. Doubling the cycling penalty hits
+                       # the velocity pattern directly, without raising
+                       # static cost further than necessary.
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
     joint_deviation_hip_roll = RewTerm(

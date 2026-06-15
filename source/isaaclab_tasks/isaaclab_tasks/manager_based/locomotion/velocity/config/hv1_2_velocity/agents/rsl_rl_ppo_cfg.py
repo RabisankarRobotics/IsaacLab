@@ -10,7 +10,7 @@ from isaaclab_rl.rsl_rl import (
 class HV1_2VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # Walking needs more samples and iterations than standing.
     num_steps_per_env = 24
-    max_iterations = 8000
+    max_iterations = 12000
     save_interval = 200
     experiment_name = "hv1_2_velocity_flat"
 

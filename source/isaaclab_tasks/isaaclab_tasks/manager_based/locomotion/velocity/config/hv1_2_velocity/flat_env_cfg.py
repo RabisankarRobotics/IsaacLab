@@ -249,7 +249,13 @@ class HV1_2VelocityRewardsCfg:
     base_height_below = RewTerm(
         func=custom_mdp.base_height_below_target_l1,
         weight=-10.0,
-        params={"target_height": 0.92},
+        # target 0.92 → 0.88 m. At 0.92 the floor was hugging the resting
+        # pelvis height (~0.94 m at default knee bend), so the policy kept
+        # support knees rigid to avoid even small pelvis dips → stilt-walk
+        # / straight-knee gait. 0.88 m gives ~6 cm of pelvis travel for
+        # natural knee-bend stance compression while still catching any
+        # actual crouch-walk attempt.
+        params={"target_height": 0.88},
     )
     # ---- effort / smoothness ----
     # Backed off from -0.005 — paired with the height-penalty rework, that

@@ -10,7 +10,11 @@ from isaaclab_rl.rsl_rl import (
 class HV1_2VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # Walking needs more samples and iterations than standing.
     num_steps_per_env = 24
-    max_iterations = 12000
+    # Bumped 12000 → 40000 for omnidirectional task expansion. Forward-only
+    # policy at iter ~19k will resume into a 3×-harder task (must also learn
+    # backward, sideways-left, sideways-right). Realistic learning budget:
+    # ~5-10k iter for the new gaits to stabilize on top of the existing base.
+    max_iterations = 40000
     save_interval = 200
     experiment_name = "hv1_2_velocity_flat"
 

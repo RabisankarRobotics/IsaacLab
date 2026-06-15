@@ -294,12 +294,11 @@ class HV1_2VelocityRewardsCfg:
     #     already prevents the bad outcome (legs crossing or splaying too far).
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.45,  # was -0.35. After adding knee_too_straight the policy
-                        # widened the effective foot stance via outward hip-yaw
-                        # to keep lateral balance under the new bent-knee load
-                        # chain. Yaw-tracking reward = 0.85 with err 0.71 rad/s
-                        # → plenty of headroom for a stiffer static penalty
-                        # without re-locking ang-vel tracking.
+        weight=-0.7,   # was -0.45. Penalties at -0.35/-0.45 reduced static yaw
+                        # deviation 4.2° → 3.3°/leg but still visually outward.
+                        # ang-vel tracking has plenty of headroom (0.85 reward),
+                        # so push hard. If track_ang_vel_z_exp drops below 0.75
+                        # next run, back off to -0.55.
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
     # Directly penalize hip_yaw VELOCITY. The deviation-L1 penalty fights the
@@ -310,12 +309,9 @@ class HV1_2VelocityRewardsCfg:
     # further (which would risk re-locking yaw tracking).
     joint_vel_hip_yaw = RewTerm(
         func=mdp.joint_vel_l2,
-        weight=-0.1,  # was -0.05. joint_vel_hip_yaw rose from -0.0352 to
-                       # -0.0475 after knee_too_straight was added — the
-                       # swing-arc cycling came back along with the static
-                       # outward drift. Doubling the cycling penalty hits
-                       # the velocity pattern directly, without raising
-                       # static cost further than necessary.
+        weight=-0.2,   # was -0.1. Cycling raw vel² dropped 0.95 → 0.70 at -0.1,
+                        # still visible. Doubling again to fully suppress the
+                        # back-and-forth swing-arc motion.
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
     joint_deviation_hip_roll = RewTerm(
@@ -358,14 +354,20 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.terrain_levels = None
 
         # ---------------- commands: walking ranges ---------------------------
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.5, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
         # Narrowed ±1.0 → ±0.5 rad/s. With std=1.0 on track_ang_vel_z_exp,
         # a ±0.5 command is well within the reward's "learnable" range
         # (exp(-(0.5/1.0)²) ≈ 0.78). After the policy converges on this range
         # we can widen back to ±1.0 in a second-stage curriculum run.
         self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
         self.commands.base_velocity.ranges.heading = (-3.14, 3.14)
+        # Bump standing envs 0.02 → 0.1. 2% (≈80 of 4096 envs) gave the policy
+        # only a thin slice of stand-still training. 10% (≈410 envs) makes
+        # zero-command behavior a first-class case the policy has to handle
+        # cleanly — important for safe deploy where the operator can leave the
+        # joystick at neutral.
+        self.commands.base_velocity.rel_standing_envs = 0.1
 
         # ---------------- domain randomization on the base link --------------
         # Parent points these at a body named "base" which doesn't exist on
@@ -424,7 +426,16 @@ class HV1_2VelocityFlatEnvCfg_PLAY(HV1_2VelocityFlatEnvCfg):
         self.scene.env_spacing = 2.5
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None
-        # For inspection, hold the command at a steady forward walk.
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
+        # Spread the 50 envs across the FULL command space so you can visually
+        # see forward / backward / sideways / turn gaits side-by-side. Each env
+        # gets its own random command at reset; resample_time_range controls how
+        # often each env picks a new command mid-episode.
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.5, 1.0)   # forward & backward
+        self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)   # side-step both ways
+        self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)   # turn both ways
+        # New command every 5 s so the playback shows multiple gait types per env.
+        self.commands.base_velocity.resampling_time_range = (5.0, 5.0)
+        # 20% standing during play — 10 of the 50 envs will hold a zero-command
+        # stand. Lets you visually verify the policy can stop cleanly without
+        # foot shuffling or drift.
+        self.commands.base_velocity.rel_standing_envs = 0.2

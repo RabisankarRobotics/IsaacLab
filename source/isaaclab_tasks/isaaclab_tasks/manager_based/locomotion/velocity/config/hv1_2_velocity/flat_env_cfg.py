@@ -318,6 +318,21 @@ class HV1_2VelocityRewardsCfg:
         weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_roll_joint$"])},
     )
+    # One-sided "no stilt-walk" penalty: penalize knees straighter than 0.4 rad.
+    # Default rest bend is 0.36 rad, so even neutral pose triggers a tiny push to
+    # bend more. Swing-leg knees naturally bend to 0.7-1.0 rad → 0 penalty during
+    # swing. Only locked-straight stance knees (which give the stilt-walk look)
+    # actually pay.
+    # Pairs with base_height_below_target=0.88: that change removed the wall
+    # forcing rigid stance, this term adds positive pressure to dip.
+    knee_too_straight = RewTerm(
+        func=custom_mdp.knee_too_straight_penalty,
+        weight=-1.0,
+        params={
+            "threshold": 0.4,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_knee_joint$"]),
+        },
+    )
 
 
 @configclass

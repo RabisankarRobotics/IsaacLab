@@ -84,6 +84,28 @@ def base_height_below_target_l1(
     return shortfall
 
 
+def knee_too_straight_penalty(
+    env: "ManagerBasedRLEnv",
+    threshold: float,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """One-sided L1 penalty when a knee is straighter than `threshold` rad.
+
+    Returns sum_over_knees(max(0, threshold - knee_angle)) per env.
+    * Swing knee (heavily bent, e.g. 0.8 rad) → 0 contribution.
+    * Stance knee at the default bend (0.36 rad) → small contribution.
+    * Locked-straight stance knee (0.0 rad) → full threshold contribution.
+    Use with a NEGATIVE weight.
+
+    Pair with `base_height_below_target_l1` — height-below removes the wall
+    that forced rigid stance; this term adds the positive pressure to dip.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    knee_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    shortfall = torch.clamp(threshold - knee_pos, min=0.0)
+    return shortfall.sum(dim=1)
+
+
 def feet_lateral_distance_clearance(
     env: "ManagerBasedRLEnv",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

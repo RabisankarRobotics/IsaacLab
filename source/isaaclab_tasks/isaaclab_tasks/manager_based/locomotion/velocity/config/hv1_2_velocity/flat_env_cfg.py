@@ -220,7 +220,11 @@ class HV1_2VelocityRewardsCfg:
     # while the foot is moving (tanh gate on xy-velocity).
     foot_clearance = RewTerm(
         func=custom_mdp.foot_clearance_reward,
-        weight=0.5,
+        # 0.5 → 0.3. foot_clearance is not command-masked, so at v_cmd=0 the
+        # policy was harvesting ~0.49 per step by marching in place (parade
+        # gait). Cutting weight + adding stand_still_no_cmd below removes
+        # the incentive to cycle feet at standstill.
+        weight=0.3,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
             # target_height 0.10 → 0.07 m. Policy was reliably hitting 10 cm
@@ -332,6 +336,25 @@ class HV1_2VelocityRewardsCfg:
         params={
             "threshold": 0.4,
             "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_knee_joint$"]),
+        },
+    )
+    # "Be still when commanded to stand." Active only when ||cmd_vel|| < 0.1
+    # (i.e. the standing-env subset). Penalizes L1 deviation of the swing-relevant
+    # leg joints from default. Kills the parade-march at v_cmd=0 directly —
+    # complements the foot_clearance weight drop (which removes the *reward*
+    # for marching; this adds the *anti-reward*).
+    # Targets hip_pitch / knee / ankle_pitch only — hip_roll and ankle_roll
+    # remain free for static balance compensation.
+    stand_still_no_cmd = RewTerm(
+        func=custom_mdp.stand_still_joint_deviation_l1,
+        weight=-2.0,
+        params={
+            "command_name": "base_velocity",
+            "command_threshold": 0.1,
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["^(left|right)_(hip_pitch|knee|ankle_pitch)_joint$"],
+            ),
         },
     )
 

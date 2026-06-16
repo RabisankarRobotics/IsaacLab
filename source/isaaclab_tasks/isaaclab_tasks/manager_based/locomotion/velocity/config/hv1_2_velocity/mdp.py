@@ -106,6 +106,37 @@ def knee_too_straight_penalty(
     return shortfall.sum(dim=1)
 
 
+def stand_still_joint_deviation_l1(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L1 deviation from default joint pose, gated to standing commands only.
+
+    Returns sum_over_joints(|q - q_default|) per env, multiplied by a mask
+    that is 1.0 when ||cmd_vel|| < command_threshold and 0.0 otherwise.
+
+    * Standing (v_cmd ≈ 0): the term fires, forcing the listed joints toward
+      their default values → kills foot cycling / parade-march at standstill.
+    * Walking (|v_cmd| ≥ threshold): the term is zero, so it does not fight
+      the swing motion the velocity-tracking reward needs.
+
+    Use with a NEGATIVE weight. Target only the swing-relevant joints
+    (hip_pitch, knee, ankle_pitch) so hip_roll / ankle_roll remain free for
+    static balance compensation.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    cmd_norm = torch.norm(command[:, :3], dim=1)
+    standing_mask = (cmd_norm < command_threshold).float()
+
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    default_pos = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    deviation = torch.sum(torch.abs(joint_pos - default_pos), dim=1)
+    return deviation * standing_mask
+
+
 def feet_lateral_distance_clearance(
     env: "ManagerBasedRLEnv",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

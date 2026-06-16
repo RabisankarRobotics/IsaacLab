@@ -162,6 +162,46 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     joint_stiffness = _to_pylist(robot.data.joint_stiffness[0])
     joint_damping = _to_pylist(robot.data.joint_damping[0])
     joint_effort_limit = _to_pylist(robot.data.joint_effort_limits[0]) if hasattr(robot.data, "joint_effort_limits") else None
+    # Motor physics params — needed to hand-edit the MJCF (joint armature /
+    # frictionloss / range) and for actuator velocity / position safety clamps
+    # in the deploy script. All hasattr-guarded so older IsaacLab versions that
+    # don't expose these attributes still produce a valid (partial) YAML.
+    joint_velocity_limit = (
+        _to_pylist(robot.data.joint_velocity_limits[0]) if hasattr(robot.data, "joint_velocity_limits") else None
+    )
+    joint_armature = _to_pylist(robot.data.joint_armature[0]) if hasattr(robot.data, "joint_armature") else None
+    joint_friction = _to_pylist(robot.data.joint_friction[0]) if hasattr(robot.data, "joint_friction") else None
+    if hasattr(robot.data, "joint_pos_limits"):
+        # shape: (Nenv, Nj, 2) where [:, :, 0] is lower, [:, :, 1] is upper
+        jpl = robot.data.joint_pos_limits[0]
+        joint_pos_limit_lower = _to_pylist(jpl[:, 0])
+        joint_pos_limit_upper = _to_pylist(jpl[:, 1])
+    else:
+        joint_pos_limit_lower = None
+        joint_pos_limit_upper = None
+    # Viscous friction lives on each ActuatorBase instance (not on robot.data),
+    # as per-actuator-group tensors. Walk robot.actuators and project the values
+    # back into the full Isaac joint order. Recorded in the YAML for sim2real
+    # reference and applied as MuJoCo passive damping via <joint damping="..."/>
+    # in the hand-edited MJCF. NOT subtracted from Python PD kd — the small
+    # double-count is consistent with how the real motor behaves.
+    joint_viscous_friction = [0.0] * len(joint_names_isaac)
+    if hasattr(robot, "actuators") and robot.actuators:
+        for act_name, act in robot.actuators.items():
+            try:
+                jids = act.joint_indices if hasattr(act, "joint_indices") else act.joint_ids
+                if isinstance(jids, slice):
+                    ids_list = list(range(len(joint_names_isaac)))[jids]
+                elif hasattr(jids, "tolist"):
+                    ids_list = jids.tolist()
+                else:
+                    ids_list = list(jids)
+                vf = act.viscous_friction[0].detach().cpu().numpy() if hasattr(act, "viscous_friction") else None
+                if vf is not None:
+                    for local_idx, isaac_idx in enumerate(ids_list):
+                        joint_viscous_friction[isaac_idx] = float(vf[local_idx])
+            except Exception as e:
+                print(f"  WARNING: actuator '{act_name}' viscous_friction extraction failed: {e}")
 
     # action — what subset of joints the policy outputs
     action_term = unwrapped.action_manager.get_term("joint_pos")
@@ -236,9 +276,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
             # CRITICAL: this is the order Isaac uses for joint_pos/joint_vel observations
             "joint_names_isaac_order": joint_names_isaac,
             "default_joint_pos": default_joint_pos,
+            # Controller params (live in the Python deploy PD loop)
             "kp": joint_stiffness,
             "kd": joint_damping,
             "effort_limit": joint_effort_limit,
+            "velocity_limit": joint_velocity_limit,
+            # MJCF joint physics params (hand-edit into the model XML to match Isaac)
+            #   armature           -> <joint armature="..."/>
+            #   friction           -> <joint frictionloss="..."/>  (Coulomb)
+            #   viscous_friction   -> <joint damping="..."/>       (velocity-proportional)
+            #   pos_limit_*        -> <joint range="lower upper"/>
+            "armature": joint_armature,
+            "friction": joint_friction,
+            "viscous_friction": joint_viscous_friction,
+            "pos_limit_lower": joint_pos_limit_lower,
+            "pos_limit_upper": joint_pos_limit_upper,
         },
         "action": {
             "dim": int(action_dim),
@@ -310,8 +362,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     print("-" * 78)
     print(f"  Isaac joint order (first 10):")
     for i, n in enumerate(joint_names_isaac[:10]):
-        print(f"    [{i:2d}] {n:<32s} q_default={default_joint_pos[i]:+.4f}  "
-              f"kp={joint_stiffness[i]:>6.1f}  kd={joint_damping[i]:>5.2f}")
+        # Compose optional fields without crashing if a value is None
+        arm_s = f"{joint_armature[i]:>6.4f}" if joint_armature is not None else "  n/a"
+        fric_s = f"{joint_friction[i]:>5.3f}" if joint_friction is not None else " n/a"
+        vlim_s = f"{joint_velocity_limit[i]:>5.2f}" if joint_velocity_limit is not None else " n/a"
+        print(
+            f"    [{i:2d}] {n:<32s} q_default={default_joint_pos[i]:+.4f}  "
+            f"kp={joint_stiffness[i]:>6.1f}  kd={joint_damping[i]:>5.2f}  "
+            f"arm={arm_s}  fric={fric_s}  vlim={vlim_s}"
+        )
     if len(joint_names_isaac) > 10:
         print(f"    ... ({len(joint_names_isaac) - 10} more — see YAML)")
     if action_joint_names:

@@ -162,12 +162,14 @@ class HV1_2VelocityRewardsCfg:
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
         weight=1.0,
-        # std 0.5 → 0.25. Post sim2sim test the robot tracked v_cmd=0.5 at
-        # roughly half speed; at std=0.5 a 0.25 m/s error still earned 0.78
-        # of max reward, so the policy had no pressure to close the gap.
-        # Sharper Gaussian (std=0.25) drops that to 0.37 → forces actual
-        # tracking. Paired with Path A (hip_yaw no_turn gate) in same run.
-        params={"command_name": "base_velocity", "std": 0.25},
+        # std 0.5 → 0.25 was too aggressive on hot resume — action_std jumped
+        # 0.4 → 0.77 from the reward-landscape shock, exploration destabilized
+        # the gait. Backed off to 0.35: at v_cmd=0.5, half-speed (actual=0.25)
+        # earns 0.60 (vs 0.78 at std=0.5, 0.37 at std=0.25). Still a clear
+        # pressure to close the tracking gap, but the step from the
+        # checkpoint's value-function expectation is small enough that PPO
+        # won't panic-explore.
+        params={"command_name": "base_velocity", "std": 0.35},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
@@ -282,7 +284,13 @@ class HV1_2VelocityRewardsCfg:
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_(pitch|roll)_joint$"])},
+        # Added hip_yaw to the limits-tracked set. Without it the joint had no
+        # mechanical-limit penalty AT ALL — combined with the earlier hard
+        # mask, hip_yaw drifted to ~90° outward on one leg. The limit penalty
+        # is one-sided (fires only when q crosses the soft limit) so it has
+        # zero cost during normal walking but acts as a wall against extreme
+        # drift if any other reward term becomes too permissive.
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_(pitch|roll)_joint$", ".*_hip_yaw_joint$"])},
     )
     # Penalize the OUTCOME (feet too close in yaw-frame Y) rather than the
     # MEANS (hip deviation). Lets the policy use hip_roll freely for balance
@@ -302,30 +310,34 @@ class HV1_2VelocityRewardsCfg:
     #   * hip_ROLL = sideways leg splay. Kept moderate; feet_lateral_clearance
     #     already prevents the bad outcome (legs crossing or splaying too far).
     #
-    # Path A change (post sim2sim test): switched hip_yaw deviation + velocity
-    # penalties to command-conditional variants gated on |ang_vel_z_cmd| < 0.1.
-    # The previous unconditional penalties at -0.7 / -0.2 visibly suppressed
-    # toe-out but ALSO killed in-place yaw — the policy turned by walking in a
-    # wider arc because rotating the hip_yaw joints was too expensive. The
-    # no_turn mask keeps the full -0.7 / -0.2 pressure during stand / forward /
-    # lateral motion (where outward rotation was the failure mode) and goes
-    # to 0 the instant a real yaw command is issued (so hip_yaw is free to
-    # pivot in place).
+    # Path A v2 (post iter-15840 collapse): switched from a hard mask to a
+    # SOFT scaling on |ang_vel_z_cmd|. The hard mask released the penalty
+    # entirely above threshold — with ang_vel_z sampled uniformly from
+    # (-0.5, 0.5), that left hip_yaw unpenalized 72% of the time, and the
+    # joint drifted to its mechanical limit (one-leg 90° outward limp).
+    # Soft scaling: penalty is ALWAYS firing (so hip_yaw always feels a
+    # restoring force toward 0), but weight is multiplied by
+    # exp(-(ang_vel_z_cmd^2) / 0.25) which gives:
+    #     ang_vel_z = 0.0  → 100% penalty (full -0.7 / -0.2)
+    #     ang_vel_z = 0.25 → 78%  penalty
+    #     ang_vel_z = 0.5  → 37%  penalty (relaxed for turning)
+    # The constant baseline kills the 90° collapse; the smooth fall-off still
+    # gives the policy room to use hip_yaw for in-place pivot.
     joint_deviation_hip_yaw = RewTerm(
-        func=custom_mdp.joint_deviation_no_turn_l1,
+        func=custom_mdp.joint_deviation_turn_softened_l1,
         weight=-0.7,
         params={
             "command_name": "base_velocity",
-            "command_threshold": 0.1,
+            "turn_softness_std": 0.5,
             "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"]),
         },
     )
     joint_vel_hip_yaw = RewTerm(
-        func=custom_mdp.joint_vel_no_turn_l2,
+        func=custom_mdp.joint_vel_turn_softened_l2,
         weight=-0.2,
         params={
             "command_name": "base_velocity",
-            "command_threshold": 0.1,
+            "turn_softness_std": 0.5,
             "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"]),
         },
     )

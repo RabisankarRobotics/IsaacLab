@@ -161,7 +161,7 @@ class HV1_2VelocityRewardsCfg:
     #      robot forward, which is impossible while balancing on one leg) ----
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
+        weight=1.5,
         # std 0.5 → 0.25 was too aggressive on hot resume — action_std jumped
         # 0.4 → 0.77 from the reward-landscape shock, exploration destabilized
         # the gait. Backed off to 0.35: at v_cmd=0.5, half-speed (actual=0.25)
@@ -173,13 +173,13 @@ class HV1_2VelocityRewardsCfg:
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=1.0,
+        weight=1.5,
         # std widened 0.5 → 1.0. Previous run had error_vel_yaw=2.42 rad/s on a
         # ±1 command — exp(-(2.42/0.5)²) ≈ 0, so the gradient on yaw vanished
         # and the policy never learned to turn. With std=1.0 the reward stays
         # measurable while error is in the 1–2 rad/s range, giving PPO signal
         # to actually shrink yaw error.
-        params={"command_name": "base_velocity", "std": 1.0},
+        params={"command_name": "base_velocity", "std": 0.5},
     )
     # ---- gait: keep the bipedal single-stance reward (it got the robot
     # stepping) but dial weights down to G1-style values and ADD gait-shape
@@ -313,45 +313,48 @@ class HV1_2VelocityRewardsCfg:
         weight=-3.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "min_distance": 0.12,
+            "min_distance": 0.18,
         },
     )
-    # Split hip-deviation into two terms so we can target each axis at the
-    # right strength:
-    #   * hip_YAW = the "duck-foot / outward leg rotation" axis. Strong weight
-    #     because the policy was visibly twisting one leg out.
-    #   * hip_ROLL = sideways leg splay. Kept moderate; feet_lateral_clearance
-    #     already prevents the bad outcome (legs crossing or splaying too far).
+    # Path B (after URDF inspection revealed the kinematic root cause).
+    # The HV1.2 hip_pitch_joint has a ±30° X-roll pre-rotation (Cassie-style
+    # splayed-hip design — see HV1_2_Without_Arms.urdf). At zero joint angles
+    # the legs hang straight (because hip_roll's +30° cancels the -30°), but
+    # the pitch ROTATION AXIS in pelvis frame is tilted to (0, 0.866, -0.5).
+    # So pure forward leg swing produces a conical sweep, displacing the
+    # foot ~3-4 cm laterally outward per leg for a normal 25° stride, with
+    # the policy's hip_yaw at exactly 0. The visible "toe-out" was largely
+    # kinematic, NOT a policy alignment failure.
     #
-    # Path A v2 (post iter-15840 collapse): switched from a hard mask to a
-    # SOFT scaling on |ang_vel_z_cmd|. The hard mask released the penalty
-    # entirely above threshold — with ang_vel_z sampled uniformly from
-    # (-0.5, 0.5), that left hip_yaw unpenalized 72% of the time, and the
-    # joint drifted to its mechanical limit (one-leg 90° outward limp).
-    # Soft scaling: penalty is ALWAYS firing (so hip_yaw always feels a
-    # restoring force toward 0), but weight is multiplied by
-    # exp(-(ang_vel_z_cmd^2) / 0.25) which gives:
-    #     ang_vel_z = 0.0  → 100% penalty (full -0.7 / -0.2)
-    #     ang_vel_z = 0.25 → 78%  penalty
-    #     ang_vel_z = 0.5  → 37%  penalty (relaxed for turning)
-    # The constant baseline kills the 90° collapse; the smooth fall-off still
-    # gives the policy room to use hip_yaw for in-place pivot.
+    # Previous joint_deviation_hip_yaw penalties (up to -1.0 soft-scaled)
+    # were forcing hip_yaw → 0, which actively PREVENTED the compensation
+    # the policy needed: hip_yaw must rotate slightly INWARD during swing
+    # to cancel the kinematic outward sweep. Path B fixes this by:
+    #   * Adding `foot_yaw_misalignment` as the primary alignment reward —
+    #     penalizes the OUTCOME (foot pointing sideways in body yaw frame).
+    #   * Keeping `joint_deviation_hip_yaw` only as a tiny anti-drift wall
+    #     (weight -0.1) using the default unconditional joint_deviation_l1.
+    #     Soft scaling no longer needed at this small weight — the penalty
+    #     is too weak to fight the foot-direction reward, so the gating
+    #     complexity adds nothing.
+    #   * Removing `joint_vel_hip_yaw` entirely — its -0.2 weight was
+    #     blocking the rhythmic hip_yaw oscillation that swing-phase
+    #     compensation requires.
     joint_deviation_hip_yaw = RewTerm(
-        func=custom_mdp.joint_deviation_turn_softened_l1,
-        weight=-0.7,
-        params={
-            "command_name": "base_velocity",
-            "turn_softness_std": 0.5,
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"]),
-        },
+        func=mdp.joint_deviation_l1,
+        weight=-0.1,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
-    joint_vel_hip_yaw = RewTerm(
-        func=custom_mdp.joint_vel_turn_softened_l2,
-        weight=-0.2,
+    # NEW (Path B primary signal): direct foot-direction reward.
+    # For each foot, penalizes |yaw_misalignment_angle| between foot +X axis
+    # and pelvis +X axis (both projected to horizontal). Foot-axis convention
+    # verified: ankle_roll_link inertial origin at xyz=(0.074, ~0, -0.014)
+    # confirms +X = forward at default pose.
+    foot_yaw_misalignment = RewTerm(
+        func=custom_mdp.foot_yaw_misalignment_l1,
+        weight=-2.0,
         params={
-            "command_name": "base_velocity",
-            "turn_softness_std": 0.5,
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"]),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
         },
     )
     joint_deviation_hip_roll = RewTerm(

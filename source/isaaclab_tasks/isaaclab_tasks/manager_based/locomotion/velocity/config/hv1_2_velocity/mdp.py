@@ -12,7 +12,7 @@ import torch
 
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.utils.math import quat_apply_inverse, yaw_quat
+from isaaclab.utils.math import quat_apply, quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -190,6 +190,75 @@ def joint_vel_turn_softened_l2(
     joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
     vel_sq = torch.sum(torch.square(joint_vel), dim=1)
     return vel_sq * softness
+
+
+def foot_yaw_misalignment_l1(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L1 penalty on foot forward-axis misalignment with body forward-axis (yaw plane).
+
+    For each foot link in ``asset_cfg.body_ids``:
+      1. Take the foot's +X axis (forward at default pose, verified from URDF
+         inertial origin), transform to world.
+      2. Take the body's +X axis (pelvis forward), transform to world.
+      3. Project both to the horizontal plane (zero Z, normalize).
+      4. Compute the signed yaw angle between them via ``atan2(cross_z, dot)``.
+
+    Returns ``sum_over_feet(|yaw_misalignment_rad|)`` per env.
+    Use with a NEGATIVE weight.
+
+    Penalizes the OUTCOME (foot pointing sideways in body yaw frame) rather
+    than the MEANS (hip_yaw joint angle). The HV1.2 URDF has a ±30° X-roll
+    pre-rotation on hip_pitch (Cassie-style splayed-hip design): pure forward
+    leg swing kinematically displaces the foot 3-6 cm laterally outward for
+    a normal stride, with the policy's hip_yaw at exactly 0. The policy must
+    use hip_yaw INWARD during swing to cancel that drift. A direct
+    joint_deviation_hip_yaw penalty (pulling hip_yaw → 0) actively prevents
+    this compensation. This reward decouples the goal from the means — the
+    policy is free to use whatever combination of hip_yaw / hip_roll / foot
+    orientation gets the foot pointing forward.
+
+    Note: only the yaw component of misalignment is penalized. Foot pitch
+    (toe-up during swing, toe-down at landing) is unconstrained.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    forward_local = torch.tensor([1.0, 0.0, 0.0], device=asset.device, dtype=torch.float32)
+
+    # ---- Body (pelvis) forward axis in world, projected to horizontal -----
+    body_quat_w = asset.data.root_quat_w  # (N, 4) wxyz
+    N = body_quat_w.shape[0]
+    body_forward_w = quat_apply(body_quat_w, forward_local.expand(N, 3))  # (N, 3)
+    body_forward_yaw = body_forward_w.clone()
+    body_forward_yaw[..., 2] = 0.0
+    body_forward_yaw = body_forward_yaw / (
+        torch.norm(body_forward_yaw, dim=-1, keepdim=True) + 1e-8
+    )
+
+    # ---- Each foot's forward axis in world, projected to horizontal ------
+    foot_quat_w = asset.data.body_quat_w[:, asset_cfg.body_ids, :]  # (N, K, 4)
+    K = foot_quat_w.shape[1]
+    foot_quat_flat = foot_quat_w.reshape(N * K, 4)
+    foot_forward_w = quat_apply(
+        foot_quat_flat, forward_local.expand(N * K, 3)
+    ).reshape(N, K, 3)
+    foot_forward_yaw = foot_forward_w.clone()
+    foot_forward_yaw[..., 2] = 0.0
+    foot_forward_yaw = foot_forward_yaw / (
+        torch.norm(foot_forward_yaw, dim=-1, keepdim=True) + 1e-8
+    )
+
+    # ---- Signed yaw angle between body forward and each foot forward -----
+    body_fwd = body_forward_yaw.unsqueeze(1)  # (N, 1, 3)
+    cross_z = (
+        body_fwd[..., 0] * foot_forward_yaw[..., 1]
+        - body_fwd[..., 1] * foot_forward_yaw[..., 0]
+    )  # (N, K)
+    dot_val = (body_fwd * foot_forward_yaw).sum(dim=-1)  # (N, K)
+    misalign = torch.abs(torch.atan2(cross_z, dot_val))  # (N, K)
+
+    return misalign.sum(dim=-1)  # (N,)
 
 
 def feet_lateral_distance_clearance(

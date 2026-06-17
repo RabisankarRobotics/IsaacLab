@@ -272,6 +272,13 @@ def main():
                         help="Override initial pelvis z (default = keyframe value).")
     parser.add_argument("--realtime", action="store_true", default=True,
                         help="Sleep between steps so sim runs at wall-clock speed.")
+    parser.add_argument(
+        "--viewer_sync_every", type=int, default=4,
+        help="Call viewer.sync() every N physics steps. Default 4 matches the "
+             "policy rate (50 Hz refresh at sim_dt=0.005) and gives a ~3x sim "
+             "speed-up vs syncing every physics step (200 Hz). Set to 1 for "
+             "max-fidelity rendering, higher for further speed-up.",
+    )
     parser.add_argument("--cmd_lin_x", type=float, default=0.0, help="Forward velocity command (m/s).")
     parser.add_argument("--cmd_lin_y", type=float, default=0.0, help="Sideways velocity command (m/s).")
     parser.add_argument("--cmd_ang_z", type=float, default=0.0, help="Yaw rate command (rad/s).")
@@ -316,6 +323,7 @@ def main():
     print(f"[deploy] xml               : {xml_path}")
     print(f"[deploy] policy ({args.policy_format})       : {policy_path}")
     print(f"[deploy] sim_dt            : {sim_dt}  decimation={decimation}  policy_dt={sim_dt * decimation}")
+    print(f"[deploy] viewer_sync_every : {args.viewer_sync_every}  (viewer refresh ≈ {1.0 / (sim_dt * args.viewer_sync_every):.0f} Hz)")
     print(f"[deploy] n_dof_total       : {n_dof}    action_dim={action_dim}")
     print(f"[deploy] action_scale      : {action_scale}    use_default_offset={use_default_offset}")
     print(f"[deploy] total_obs_dim     : {total_obs_dim_yaml}  (from YAML)")
@@ -420,6 +428,11 @@ def main():
 
     with mujoco.viewer.launch_passive(m, d) as viewer:
         start = time.time()
+        # Sliding-window timestamps for the rt_factor heartbeat — measure
+        # sim-vs-wall rate over the last second instead of cumulative since
+        # the first noisy startup interval.
+        last_print_wall_t = start
+        last_print_sim_t = 0.0
         while viewer.is_running() and time.time() - start < args.duration:
             step_start = time.time()
 
@@ -461,13 +474,40 @@ def main():
                 # Heartbeat — once per second at 50 Hz policy.
                 policy_steps = counter // decimation
                 if policy_steps % 50 == 1:
+                    # Real-time factor over the last heartbeat interval —
+                    # detects below-real-time sim even when args.realtime
+                    # is on (e.g. CPU bottleneck, viewer eating frame time).
+                    now = time.time()
+                    dt_sim = d.time - last_print_sim_t
+                    dt_wall = now - last_print_wall_t
+                    rt_factor = dt_sim / dt_wall if dt_wall > 0 else 0.0
+                    last_print_sim_t = d.time
+                    last_print_wall_t = now
+                    # Actual base velocity in body frame so it can be
+                    # compared directly with the velocity command (commands
+                    # are interpreted in the robot's yaw-aligned frame).
+                    v_body = quat_rotate_inverse(
+                        d.qpos[3:7].astype(np.float32),
+                        d.qvel[0:3].astype(np.float32),
+                    )
                     print(
-                        f"[deploy] t={d.time:6.2f}s  base_z={d.qpos[2]:.3f}  "
-                        f"|action|={np.abs(action).max():.2f}  "
+                        f"[deploy] t={d.time:6.2f}s rt={rt_factor:.2f}x  "
+                        f"cmd=[vx={obs_builder.vel_cmd[0]:+.2f} "
+                        f"vy={obs_builder.vel_cmd[1]:+.2f} "
+                        f"wz={obs_builder.vel_cmd[2]:+.2f}]  "
+                        f"actual=[vx={v_body[0]:+.2f} "
+                        f"vy={v_body[1]:+.2f} "
+                        f"wz={d.qvel[5]:+.2f}]  "
+                        f"base_z={d.qpos[2]:.3f}  "
                         f"|tau|={np.abs(tau).max():.1f}"
                     )
 
-            viewer.sync()
+            # Render every Nth physics step instead of every step. Skipping
+            # 3 of every 4 viewer.sync() calls is the cheapest path to higher
+            # rt_factor on CPU-bottlenecked machines; physics integration
+            # itself is much cheaper than the GL renderer.
+            if counter % args.viewer_sync_every == 0:
+                viewer.sync()
 
             if args.realtime:
                 slack = sim_dt - (time.time() - step_start)

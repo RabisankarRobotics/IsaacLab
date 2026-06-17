@@ -295,12 +295,25 @@ class HV1_2VelocityRewardsCfg:
     # Penalize the OUTCOME (feet too close in yaw-frame Y) rather than the
     # MEANS (hip deviation). Lets the policy use hip_roll freely for balance
     # while strictly preventing leg crossing. One-sided: zero when clear.
+    #
+    # Softened from weight=-10.0 / min=0.18 → -3.0 / 0.12 to probe whether
+    # this constraint is the root cause of toe-out:
+    #   * old "max single-step cost" = 10 × 0.18 = 1.8 per env-step
+    #   * new "max single-step cost" =  3 × 0.12 = 0.36 (5× smaller worst case)
+    # Hypothesis: at min=0.18 + weight=-10, the cheapest way for the policy
+    # to satisfy the constraint during swing was to rotate hip_yaw outward
+    # — the rotated swing foot stays wider laterally than a foot under a
+    # vertical leg. That made toe-out a rewarded gait feature, not a quirk.
+    # With min=0.12 the constraint is easy to satisfy with feet straight
+    # under hips (34 cm default >> 12 cm threshold), removing the toe-out
+    # incentive. If toe-out persists after this softening, cause lies
+    # elsewhere (balance crutch, foot_clearance arc, etc.).
     feet_lateral_clearance = RewTerm(
         func=custom_mdp.feet_lateral_distance_clearance,
-        weight=-10.0,
+        weight=-3.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "min_distance": 0.18,  # ~half of standing 0.34 m separation
+            "min_distance": 0.12,
         },
     )
     # Split hip-deviation into two terms so we can target each axis at the

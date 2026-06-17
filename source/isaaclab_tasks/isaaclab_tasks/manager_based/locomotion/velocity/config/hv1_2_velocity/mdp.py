@@ -137,6 +137,57 @@ def stand_still_joint_deviation_l1(
     return deviation * standing_mask
 
 
+def joint_deviation_no_turn_l1(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L1 joint deviation from default, gated to non-turning commands only.
+
+    Returns sum_over_joints(|q - q_default|) per env, multiplied by a mask that
+    is 1.0 when |ang_vel_z_cmd| < command_threshold and 0.0 otherwise.
+
+    Use for hip_yaw: keeps legs forward during stand / forward / lateral
+    motion, but releases the constraint during turn commands so the policy
+    can use hip_yaw to pivot in place instead of arc-walking.
+    Use with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    no_turn_mask = (torch.abs(command[:, 2]) < command_threshold).float()
+
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    default_pos = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    deviation = torch.sum(torch.abs(joint_pos - default_pos), dim=1)
+    return deviation * no_turn_mask
+
+
+def joint_vel_no_turn_l2(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L2 joint-velocity penalty, gated to non-turning commands only.
+
+    Returns sum_over_joints(q_dot^2) per env, multiplied by a mask that is
+    1.0 when |ang_vel_z_cmd| < command_threshold and 0.0 otherwise.
+
+    Companion to `joint_deviation_no_turn_l1` — kills the back-and-forth
+    hip_yaw cycling during stand / forward / lateral motion, but allows
+    hip_yaw velocity during turn commands so in-place pivot is not crushed.
+    Use with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    no_turn_mask = (torch.abs(command[:, 2]) < command_threshold).float()
+
+    joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    vel_sq = torch.sum(torch.square(joint_vel), dim=1)
+    return vel_sq * no_turn_mask
+
+
 def feet_lateral_distance_clearance(
     env: "ManagerBasedRLEnv",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

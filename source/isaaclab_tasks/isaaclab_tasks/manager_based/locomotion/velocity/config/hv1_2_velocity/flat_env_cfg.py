@@ -162,7 +162,12 @@ class HV1_2VelocityRewardsCfg:
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
         weight=1.0,
-        params={"command_name": "base_velocity", "std": 0.5},
+        # std 0.5 → 0.25. Post sim2sim test the robot tracked v_cmd=0.5 at
+        # roughly half speed; at std=0.5 a 0.25 m/s error still earned 0.78
+        # of max reward, so the policy had no pressure to close the gap.
+        # Sharper Gaussian (std=0.25) drops that to 0.37 → forces actual
+        # tracking. Paired with Path A (hip_yaw no_turn gate) in same run.
+        params={"command_name": "base_velocity", "std": 0.25},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
@@ -296,27 +301,33 @@ class HV1_2VelocityRewardsCfg:
     #     because the policy was visibly twisting one leg out.
     #   * hip_ROLL = sideways leg splay. Kept moderate; feet_lateral_clearance
     #     already prevents the bad outcome (legs crossing or splaying too far).
+    #
+    # Path A change (post sim2sim test): switched hip_yaw deviation + velocity
+    # penalties to command-conditional variants gated on |ang_vel_z_cmd| < 0.1.
+    # The previous unconditional penalties at -0.7 / -0.2 visibly suppressed
+    # toe-out but ALSO killed in-place yaw — the policy turned by walking in a
+    # wider arc because rotating the hip_yaw joints was too expensive. The
+    # no_turn mask keeps the full -0.7 / -0.2 pressure during stand / forward /
+    # lateral motion (where outward rotation was the failure mode) and goes
+    # to 0 the instant a real yaw command is issued (so hip_yaw is free to
+    # pivot in place).
     joint_deviation_hip_yaw = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.7,   # was -0.45. Penalties at -0.35/-0.45 reduced static yaw
-                        # deviation 4.2° → 3.3°/leg but still visually outward.
-                        # ang-vel tracking has plenty of headroom (0.85 reward),
-                        # so push hard. If track_ang_vel_z_exp drops below 0.75
-                        # next run, back off to -0.55.
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
+        func=custom_mdp.joint_deviation_no_turn_l1,
+        weight=-0.7,
+        params={
+            "command_name": "base_velocity",
+            "command_threshold": 0.1,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"]),
+        },
     )
-    # Directly penalize hip_yaw VELOCITY. The deviation-L1 penalty fights the
-    # outward-arc behavior on a per-step "where is the joint" basis, but the
-    # cycling motion (neutral → outward during swing → neutral on touchdown)
-    # is fundamentally a velocity pattern. Adding joint_vel_l2 hits the rapid
-    # back-and-forth directly without raising the static deviation cost
-    # further (which would risk re-locking yaw tracking).
     joint_vel_hip_yaw = RewTerm(
-        func=mdp.joint_vel_l2,
-        weight=-0.2,   # was -0.1. Cycling raw vel² dropped 0.95 → 0.70 at -0.1,
-                        # still visible. Doubling again to fully suppress the
-                        # back-and-forth swing-arc motion.
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
+        func=custom_mdp.joint_vel_no_turn_l2,
+        weight=-0.2,
+        params={
+            "command_name": "base_velocity",
+            "command_threshold": 0.1,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"]),
+        },
     )
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,

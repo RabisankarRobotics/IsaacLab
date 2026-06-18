@@ -256,15 +256,20 @@ class HV1_2VelocityRewardsCfg:
     # ---- stability ----
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
-    # Weight bumped -2.0 → -2.5 (1.25× — within safe hot-resume band) to lean
-    # harder on torso-upright during backward / sideways gait. flat_orientation
+    # Weight progression: -2.0 → -2.5 → -3.0. Each step is 1.2-1.25× — within
+    # the safe hot-resume band per [[feedback-ppo-reward-edits]]. flat_orientation
     # acts on the PELVIS body frame; the waist joints are PD-pinned at 0 by
     # pin_waist_target_reset, so a level pelvis means a level torso (no
-    # separate torso reward needed). Pair with the lin_vel_x symmetrization
-    # below — the orientation bump alone might hurt tracking, but together
-    # with equalized backward command data the policy should converge to
-    # a clean upright posture across all directions.
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.5)
+    # separate torso reward needed).
+    #
+    # The -2.5 step paired with lin_vel_x symmetrization + arms-down + ankle
+    # freedom reduced the standing tilt visually but the orientation L2 metric
+    # actually went up (0.012 → 0.021 rad²) — the increase came from transient
+    # rocking as the policy started using freed ankle for active balance, not
+    # from static tilt growing. -3.0 directly pressures both static tilt and
+    # transient rocking down. If 2k iters aren't enough, also bump ang_vel_xy_l2
+    # (-0.05 → -0.1) to separately damp the dynamic component.
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-3.0)
     # One-sided L1 "no-squat" penalty: zero when pelvis is at or above 0.92 m,
     # linear in shortfall below.
     #   normal walk at 0.93     → 0 penalty

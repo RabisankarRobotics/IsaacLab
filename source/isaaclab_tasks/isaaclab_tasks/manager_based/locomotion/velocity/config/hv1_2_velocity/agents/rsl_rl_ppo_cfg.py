@@ -14,7 +14,7 @@ class HV1_2VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # policy at iter ~19k will resume into a 3×-harder task (must also learn
     # backward, sideways-left, sideways-right). Realistic learning budget:
     # ~5-10k iter for the new gaits to stabilize on top of the existing base.
-    max_iterations = 40000
+    max_iterations = 20000
     save_interval = 200
     experiment_name = "hv1_2_velocity_flat"
 

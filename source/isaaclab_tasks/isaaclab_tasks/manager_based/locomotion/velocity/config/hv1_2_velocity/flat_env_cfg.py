@@ -54,14 +54,23 @@ ARM_JOINT_NAMES = [
 WAIST_TARGETS = {n: (0.0, 0.0) for n in WAIST_JOINT_NAMES}
 HEAD_TARGETS = {n: (0.0, 0.0) for n in HEAD_JOINT_NAMES}
 ARM_TARGETS_PIN = {
-    "left_shoulder_pitch_joint": (0.4, 0.4),
+    # shoulder_pitch 0.4 → 0.0 (arms straight down). Previous 0.4 rad (23°)
+    # forward-arm pose shifted upper-body CoM ~7 cm forward of pelvis, creating
+    # a forward gravitational moment that the policy compensated by tilting
+    # the whole pelvis-and-torso backward (the "torso lean back" the user
+    # observed at standstill and during backward / sideways walking). Arms
+    # straight down eliminates the forward CoM bias at the source, allowing
+    # the policy to converge to a truly upright static posture.
+    # elbow kept at 0.3 (slight bend) — keeps the forearm clear of the thigh
+    # during swing without adding meaningful forward moment at this angle.
+    "left_shoulder_pitch_joint": (0.0, 0.0),
     "left_shoulder_roll_joint":  (0.0, 0.0),
     "left_shoulder_yaw_joint":   (0.0, 0.0),
     "left_elbow_joint":          (0.3, 0.3),
     "left_wrist_roll_joint":     (0.0, 0.0),
     "left_wrist_pitch_joint":    (0.0, 0.0),
     "left_wrist_yaw_joint":      (0.0, 0.0),
-    "right_shoulder_pitch_joint": (0.4, 0.4),
+    "right_shoulder_pitch_joint": (0.0, 0.0),
     "right_shoulder_roll_joint":  (0.0, 0.0),
     "right_shoulder_yaw_joint":   (0.0, 0.0),
     "right_elbow_joint":          (0.3, 0.3),
@@ -390,8 +399,16 @@ class HV1_2VelocityRewardsCfg:
     # leg joints from default. Kills the parade-march at v_cmd=0 directly —
     # complements the foot_clearance weight drop (which removes the *reward*
     # for marching; this adds the *anti-reward*).
-    # Targets hip_pitch / knee / ankle_pitch only — hip_roll and ankle_roll
-    # remain free for static balance compensation.
+    #
+    # Joint list narrowed: hip_pitch + knee only. ankle_pitch REMOVED.
+    # Previous (hip_pitch + knee + ankle_pitch) over-constrained static
+    # balance — the policy couldn't adjust ankle_pitch to put CoM over foot
+    # midpoint, so it settled into a marginally-balanced backward-tilted
+    # standing posture (the "lean back + drift back to balance" symptom).
+    # Freeing ankle_pitch lets the policy use ankle torque to actively
+    # balance pitch at standstill, while hip_pitch + knee stay pinned to
+    # prevent the parade-march / squat-walk failure mode this term targets.
+    # hip_roll and ankle_roll remain free for lateral static balance.
     stand_still_no_cmd = RewTerm(
         func=custom_mdp.stand_still_joint_deviation_l1,
         weight=-2.0,
@@ -400,7 +417,7 @@ class HV1_2VelocityRewardsCfg:
             "command_threshold": 0.1,
             "asset_cfg": SceneEntityCfg(
                 "robot",
-                joint_names=["^(left|right)_(hip_pitch|knee|ankle_pitch)_joint$"],
+                joint_names=["^(left|right)_(hip_pitch|knee)_joint$"],
             ),
         },
     )

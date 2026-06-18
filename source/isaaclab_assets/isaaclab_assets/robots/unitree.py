@@ -805,7 +805,12 @@ HV1_2_CFG = ArticulationCfg(
             "waist_yaw_joint": 0.0,
             "waist_roll_joint": 0.0,
             "waist_pitch_joint": 0.0,
-            ".*_shoulder_pitch_joint": 0.4,
+            # shoulder_pitch 0.4 → 0.0 (arms straight down). Eliminates the
+            # ~7 cm forward CoM bias from arms-forward pose. Matches
+            # ARM_TARGETS_PIN in hv1_2_velocity/flat_env_cfg.py — keep these
+            # two in sync so the robot spawns in the same pose the PD targets
+            # hold it at (otherwise frame-1 PD snap destabilizes init balance).
+            ".*_shoulder_pitch_joint": 0.0,
             ".*_shoulder_roll_joint": 0.0,
             ".*_shoulder_yaw_joint": 0.0,
             ".*_elbow_joint": 0.3,

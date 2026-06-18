@@ -247,7 +247,15 @@ class HV1_2VelocityRewardsCfg:
     # ---- stability ----
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
+    # Weight bumped -2.0 → -2.5 (1.25× — within safe hot-resume band) to lean
+    # harder on torso-upright during backward / sideways gait. flat_orientation
+    # acts on the PELVIS body frame; the waist joints are PD-pinned at 0 by
+    # pin_waist_target_reset, so a level pelvis means a level torso (no
+    # separate torso reward needed). Pair with the lin_vel_x symmetrization
+    # below — the orientation bump alone might hurt tracking, but together
+    # with equalized backward command data the policy should converge to
+    # a clean upright posture across all directions.
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.5)
     # One-sided L1 "no-squat" penalty: zero when pelvis is at or above 0.92 m,
     # linear in shortfall below.
     #   normal walk at 0.93     → 0 penalty
@@ -416,7 +424,14 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.curriculum.terrain_levels = None
 
         # ---------------- commands: walking ranges ---------------------------
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.5, 1.0)
+        # lin_vel_x widened (-0.5, 1.0) → (-1.0, 1.0). The asymmetric range gave
+        # forward walking 2× more gradient signal than backward over 40k iters,
+        # leading to a clean forward gait but a noticeable backward-lean torso
+        # posture when commanded to walk backward (less optimization signal →
+        # policy fell into "use forward-style stance with body tilted back" to
+        # satisfy the reward landscape). Symmetric range balances the training
+        # data and lets backward walking converge to a clean upright posture.
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
         # Narrowed ±1.0 → ±0.5 rad/s. With std=1.0 on track_ang_vel_z_exp,
         # a ±0.5 command is well within the reward's "learnable" range
@@ -492,7 +507,7 @@ class HV1_2VelocityFlatEnvCfg_PLAY(HV1_2VelocityFlatEnvCfg):
         # see forward / backward / sideways / turn gaits side-by-side. Each env
         # gets its own random command at reset; resample_time_range controls how
         # often each env picks a new command mid-episode.
-        self.commands.base_velocity.ranges.lin_vel_x = (-0.5, 1.0)   # forward & backward
+        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)   # forward & backward (symmetric)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)   # side-step both ways
         self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)   # turn both ways
         # New command every 5 s so the playback shows multiple gait types per env.

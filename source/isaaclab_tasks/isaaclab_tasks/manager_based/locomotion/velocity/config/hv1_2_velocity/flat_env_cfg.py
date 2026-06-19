@@ -14,6 +14,7 @@ Differences vs. hv1_2_stand:
 
 from __future__ import annotations
 
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -63,15 +64,18 @@ ARM_TARGETS_PIN = {
     # the policy to converge to a truly upright static posture.
     # elbow kept at 0.3 (slight bend) — keeps the forearm clear of the thigh
     # during swing without adding meaningful forward moment at this angle.
+    # shoulder_roll ±0.16 (matches Unitree G1 convention) — slightly abducts
+    # both arms outward so they don't collide with the waist/thigh during
+    # hip rotation and wide-stance walking.
     "left_shoulder_pitch_joint": (0.0, 0.0),
-    "left_shoulder_roll_joint":  (0.0, 0.0),
+    "left_shoulder_roll_joint":  (0.16, 0.16),
     "left_shoulder_yaw_joint":   (0.0, 0.0),
     "left_elbow_joint":          (0.3, 0.3),
     "left_wrist_roll_joint":     (0.0, 0.0),
     "left_wrist_pitch_joint":    (0.0, 0.0),
     "left_wrist_yaw_joint":      (0.0, 0.0),
     "right_shoulder_pitch_joint": (0.0, 0.0),
-    "right_shoulder_roll_joint":  (0.0, 0.0),
+    "right_shoulder_roll_joint":  (-0.16, -0.16),
     "right_shoulder_yaw_joint":   (0.0, 0.0),
     "right_elbow_joint":          (0.3, 0.3),
     "right_wrist_roll_joint":     (0.0, 0.0),
@@ -444,6 +448,36 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.scene.terrain.terrain_generator = None
         self.scene.height_scanner = None
         self.curriculum.terrain_levels = None
+
+        # ---------------- 3-phase stand→walk command curriculum ---------------
+        # Sim-to-real DelayedPD training: actuator command lag (0-30 ms) is a
+        # big distribution shift vs the previous ImplicitActuator policy.
+        # Curriculum gives the policy a clean foundation phase to learn
+        # delayed-PD control under zero-command stand, then introduces slow
+        # walking before opening to full velocity.
+        #
+        # Phase 1 (iter 0-2000):     cmd = zero, 100% standing envs
+        # Phase 2 (iter 2000-5000):  cmd at 30% of full range, 30% standing envs
+        # Phase 3 (iter 5000+):      full range, 10% standing envs
+        #
+        # The ranges below set the PHASE-3 (final) targets; the curriculum
+        # function overrides them downward during phases 1 and 2 and restores
+        # them at phase 3. Tweak full-range values here if you want a different
+        # final command envelope.
+        self.curriculum.command_phase = CurrTerm(
+            func=custom_mdp.stand_to_walk_command_curriculum,
+            params={
+                "stand_until_iters": 2000,
+                "slow_until_iters": 5000,
+                "slow_scale": 0.3,
+                "lin_vel_x_full": (-1.0, 1.0),
+                "lin_vel_y_full": (-0.5, 0.5),
+                "ang_vel_z_full": (-0.5, 0.5),
+                "rel_standing_envs_phase1": 1.0,
+                "rel_standing_envs_phase2": 0.3,
+                "rel_standing_envs_phase3": 0.1,
+            },
+        )
 
         # ---------------- commands: walking ranges ---------------------------
         # lin_vel_x widened (-0.5, 1.0) → (-1.0, 1.0). The asymmetric range gave

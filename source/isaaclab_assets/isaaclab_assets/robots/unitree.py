@@ -21,7 +21,7 @@ Reference: https://github.com/unitreerobotics/unitree_ros
 """
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import ActuatorNetMLPCfg, DCMotorCfg, ImplicitActuatorCfg
+from isaaclab.actuators import ActuatorNetMLPCfg, DCMotorCfg, DelayedPDActuatorCfg, ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 
@@ -720,7 +720,7 @@ G1_INSPIRE_FTP_CFG.actuators["hands"] = ImplicitActuatorCfg(
 # ---------------------------------------------------------------------------
 HV1_2_URDF_PATH = (
     "/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/"
-    "urdf_mesh/hv1_2/hv1_2_without_ee/HV1_2_Without_Arms.urdf"
+    "urdf_mesh/hv1_2/hv1_2_without_ee_ankle_modified/hv1_2_without_arm_2.urdf"
 )
 
 HV1_2_CFG = ArticulationCfg(
@@ -761,8 +761,8 @@ HV1_2_CFG = ArticulationCfg(
                     ".*_hip_roll_joint": 15.0,
                     ".*_hip_pitch_joint": 15.0,
                     ".*_knee_joint": 15.0,
-                    ".*_ankle_pitch_joint": 25.0,
-                    ".*_ankle_roll_joint": 25.0,
+                    ".*_ankle_pitch_joint": 20.0,
+                    ".*_ankle_roll_joint": 20.0,
                     ".*_wrist_roll_joint": 25.0,
                     "waist_yaw_joint": 20.0,
                     "waist_roll_joint": 20.0,
@@ -805,13 +805,17 @@ HV1_2_CFG = ArticulationCfg(
             "waist_yaw_joint": 0.0,
             "waist_roll_joint": 0.0,
             "waist_pitch_joint": 0.0,
-            # shoulder_pitch 0.4 → 0.0 (arms straight down). Eliminates the
-            # ~7 cm forward CoM bias from arms-forward pose. Matches
-            # ARM_TARGETS_PIN in hv1_2_velocity/flat_env_cfg.py — keep these
-            # two in sync so the robot spawns in the same pose the PD targets
-            # hold it at (otherwise frame-1 PD snap destabilizes init balance).
+            # shoulder_pitch 0.0 (arms straight down). Eliminates ~7 cm
+            # forward CoM bias vs the original 0.4 pose.
+            # shoulder_roll ±0.16 (Unitree G1 convention) — abducts both arms
+            # slightly outward to prevent arm-thigh/waist collision during
+            # hip rotation. Per-side values overridden after the regex.
+            # Keep these in sync with ARM_TARGETS_PIN in
+            # hv1_2_velocity/flat_env_cfg.py — frame-1 PD snap destabilizes
+            # init balance if they disagree.
             ".*_shoulder_pitch_joint": 0.0,
-            ".*_shoulder_roll_joint": 0.0,
+            "left_shoulder_roll_joint": 0.16,
+            "right_shoulder_roll_joint": -0.16,
             ".*_shoulder_yaw_joint": 0.0,
             ".*_elbow_joint": 0.3,
             ".*_wrist_roll_joint": 0.0,
@@ -823,40 +827,74 @@ HV1_2_CFG = ArticulationCfg(
         joint_vel={".*": 0.0},
     ),
     soft_joint_pos_limit_factor=0.9,
+    # ---------------------------------------------------------------------
+    # All actuator groups switched ImplicitActuatorCfg → DelayedPDActuatorCfg
+    # for sim-to-real training. The delay buffer adds 0–6 physics steps of
+    # command lag per env (re-sampled each reset), modeling real-hardware
+    # CAN-bus + motor controller response latency. At sim_dt=0.005s, max_delay=6
+    # corresponds to ~30 ms of round-trip command delay — representative of
+    # mid-tier industrial motor drives.
+    # `effort_limit` / `velocity_limit` (no _sim suffix) — for explicit PD
+    # actuators these clip the Python PD output (matches Spot's convention,
+    # see spot.py:163-170). All other params (Kp, Kd, armature, friction,
+    # viscous_friction) carry over unchanged from the implicit configuration.
+    # ---------------------------------------------------------------------
     actuators={
         # X12-320: hip pitch/roll/yaw + knee (both sides) = 8 joints
-        "legs_x12_320": ImplicitActuatorCfg(
+        "legs_x12_320": DelayedPDActuatorCfg(
             joint_names_expr=[
                 ".*_hip_yaw_joint",
                 ".*_hip_roll_joint",
                 ".*_hip_pitch_joint",
                 ".*_knee_joint",
             ],
-            effort_limit_sim=85.0,
-            velocity_limit_sim=10.0,
+            effort_limit=85.0,
+            velocity_limit=10.0,
             stiffness=250.0,
             damping=15.0,
             armature=0.326938,
             friction=1.694307,
             viscous_friction=0.350134,
+            min_delay=0,
+            max_delay=6,
         ),
-        # X6-60: ankle pitch/roll + wrist_roll (both sides) = 6 joints
-        "ankle_wristroll_x6_60": ImplicitActuatorCfg(
+        # X8-120: ankle pitch/roll (both sides) = 4 joints.
+        # Upgraded from X6 because X6-60 (20 Nm) is undersized for real-robot
+        # ankle torque on an 83 kg body during walking/balance. All motor
+        # params (Kp, Kd, armature, friction, viscous_friction) match
+        # waist_shoulder_elbow_x8_120 — same physical motor spec.
+        "ankles_x8_120": DelayedPDActuatorCfg(
             joint_names_expr=[
                 ".*_ankle_pitch_joint",
                 ".*_ankle_roll_joint",
+            ],
+            effort_limit=43.0,
+            velocity_limit=13.0,
+            stiffness=200.0,
+            damping=20.0,
+            armature=0.065893,
+            friction=0.849291,
+            viscous_friction=0.379237,
+            min_delay=0,
+            max_delay=6,
+        ),
+        # X6-60: wrist_roll only (both sides) = 2 joints
+        "wristroll_x6_60": DelayedPDActuatorCfg(
+            joint_names_expr=[
                 ".*_wrist_roll_joint",
             ],
-            effort_limit_sim=20.0,
-            velocity_limit_sim=16.0,
+            effort_limit=20.0,
+            velocity_limit=16.0,
             stiffness=200.0,
             damping=25.0,
             armature=0.019603,
             friction=0.321816,
             viscous_friction=0.165640,
+            min_delay=0,
+            max_delay=6,
         ),
         # X8-120: waist (3) + shoulder pitch/roll/yaw + elbow (both sides) = 11 joints
-        "waist_shoulder_elbow_x8_120": ImplicitActuatorCfg(
+        "waist_shoulder_elbow_x8_120": DelayedPDActuatorCfg(
             joint_names_expr=[
                 "waist_yaw_joint",
                 "waist_roll_joint",
@@ -866,29 +904,33 @@ HV1_2_CFG = ArticulationCfg(
                 ".*_shoulder_yaw_joint",
                 ".*_elbow_joint",
             ],
-            effort_limit_sim=43.0,
-            velocity_limit_sim=13.0,
+            effort_limit=43.0,
+            velocity_limit=13.0,
             stiffness=200.0,
             damping=20.0,
             armature=0.065893,
             friction=0.849291,
             viscous_friction=0.379237,
+            min_delay=0,
+            max_delay=6,
         ),
         # X4-36: wrist pitch/yaw + head pitch/roll/yaw = 7 joints
-        "wrist_head_x4_36": ImplicitActuatorCfg(
+        "wrist_head_x4_36": DelayedPDActuatorCfg(
             joint_names_expr=[
                 ".*_wrist_pitch_joint",
                 ".*_wrist_yaw_joint",
                 "head_pitch_joint",
                 "head_yaw_joint",
             ],
-            effort_limit_sim=10.5,
-            velocity_limit_sim=8.6,
+            effort_limit=10.5,
+            velocity_limit=8.6,
             stiffness=80.0,
             damping=3.0,
             armature=0.045213,
             friction=0.388995,
             viscous_friction=0.154954,
+            min_delay=0,
+            max_delay=6,
         ),
     },
 )

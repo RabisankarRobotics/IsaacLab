@@ -2,8 +2,8 @@ meta:
   task: Isaac-Velocity-Flat-HV1_2-v0
   play_task: Isaac-Velocity-Flat-HV1_2-Play-v0
   experiment_name: hv1_2_velocity_flat
-  run_dir: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_11-03-52
-  checkpoint: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_11-03-52/model_16400.pt
+  run_dir: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_15-34-18
+  checkpoint: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_15-34-18/model_16400.pt
 robot:
   xml_path: /home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/urdf_mesh/hv1_2/hv1_2_without_ee/HV1_2_Without_Arms.urdf
   num_dof_total: 31
@@ -52,8 +52,8 @@ robot:
   - 0.36000001430511475
   - 0.36000001430511475
   - 0.0
-  - 0.4000000059604645
-  - 0.4000000059604645
+  - 0.0
+  - 0.0
   - -0.20000000298023224
   - -0.20000000298023224
   - 0.0
@@ -411,8 +411,8 @@ commands:
   - 0.0
   _comment: Set EE pose commands at runtime (per-hand) in the MuJoCo runner.
 policy:
-  jit_path: /home/rabisankar/IsaacLab/deploy/model/hv1_2_loco_leg_only/walking_good_jun_18/1/policy.pt
-  onnx_path: /home/rabisankar/IsaacLab/deploy/model/hv1_2_loco_leg_only/walking_good_jun_18/1/policy.onnx
+  jit_path: /home/rabisankar/IsaacLab/deploy/model/hv1_2_loco_leg_only/walking_good_jun_18/2/policy.pt
+  onnx_path: /home/rabisankar/IsaacLab/deploy/model/hv1_2_loco_leg_only/walking_good_jun_18/2/policy.onnx
   exists: true
   size_mb: 0.81
   actor_obs_normalization: null

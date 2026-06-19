@@ -18,7 +18,10 @@
       <default class="legs_x12_320">
         <joint armature="0.326938" frictionloss="1.694307" damping="0.350134"/>
       </default>
-      <default class="ankle_wristroll_x6_60">
+      <default class="ankles_x8_120">
+        <joint armature="0.065893" frictionloss="0.849291" damping="0.379237"/>
+      </default>
+      <default class="wristroll_x6_60">
         <joint armature="0.019603" frictionloss="0.321816" damping="0.165640"/>
       </default>
       <default class="waist_shoulder_elbow_x8_120">
@@ -95,11 +98,11 @@
               <geom type="mesh" rgba="0.89412 0.89412 0.89412 1" mesh="right_knee_link"/>
               <body name="right_ankle_pitch_link" pos="-0.00025844 0 -0.41" quat="1 0 0.000315175 0">
                 <inertial pos="0.026658 -3.688e-09 0.0010187" quat="0.704653 0.704653 0.0588568 -0.0588568" mass="0.10149" diaginertia="5.47042e-05 5.08438e-05 1.1138e-05"/>
-                <joint name="right_ankle_pitch_joint" class="ankle_wristroll_x6_60" pos="0 0 0" axis="0 1 0" range="-0.87 0.52" actuatorfrcrange="-20 20"/>
+                <joint name="right_ankle_pitch_joint" class="ankles_x8_120" pos="0 0 0" axis="0 1 0" range="-0.87 0.52" actuatorfrcrange="-43 43"/>
                 <geom type="mesh" rgba="0.89412 0.89412 0.89412 1" mesh="right_ankle_pitch_link"/>
                 <body name="right_ankle_roll_link" pos="0.02505 0 0">
                   <inertial pos="0.073986 7.9712e-06 -0.013839" quat="-1.0137e-05 0.710822 -4.13815e-05 0.703372" mass="2.7315" diaginertia="0.0222261 0.019302 0.00343631"/>
-                  <joint name="right_ankle_roll_joint" class="ankle_wristroll_x6_60" pos="0 0 0" axis="1 0 0" range="-0.26 0.26" actuatorfrcrange="-20 20"/>
+                  <joint name="right_ankle_roll_joint" class="ankles_x8_120" pos="0 0 0" axis="1 0 0" range="-0.26 0.26" actuatorfrcrange="-43 43"/>
                   <geom type="mesh" rgba="0.89412 0.89412 0.89412 1" mesh="right_ankle_roll_link"/>
                 </body>
               </body>
@@ -126,11 +129,11 @@
               <geom type="mesh" rgba="0.89412 0.89412 0.89412 1" mesh="left_knee_link"/>
               <body name="left_ankle_pitch_link" pos="0 0 -0.41">
                 <inertial pos="0.026676 -3.6851e-09 0.0010187" quat="0.704653 0.704653 0.0588568 -0.0588568" mass="0.10149" diaginertia="5.47042e-05 5.08438e-05 1.1138e-05"/>
-                <joint name="left_ankle_pitch_joint" class="ankle_wristroll_x6_60" pos="0 0 0" axis="0 1 0" range="-0.87 0.52" actuatorfrcrange="-20 20"/>
+                <joint name="left_ankle_pitch_joint" class="ankles_x8_120" pos="0 0 0" axis="0 1 0" range="-0.87 0.52" actuatorfrcrange="-43 43"/>
                 <geom type="mesh" rgba="0.89412 0.89412 0.89412 1" mesh="left_ankle_pitch_link"/>
                 <body name="left_ankle_roll_link" pos="0.025068 0 0">
                   <inertial pos="0.073987 7.5808e-06 -0.013839" quat="-1.48602e-05 0.710822 -4.52713e-05 0.703372" mass="2.7315" diaginertia="0.0222261 0.019302 0.00343621"/>
-                  <joint name="left_ankle_roll_joint" class="ankle_wristroll_x6_60" pos="0 0 0" axis="1 0 0" range="-0.26 0.26" actuatorfrcrange="-20 20"/>
+                  <joint name="left_ankle_roll_joint" class="ankles_x8_120" pos="0 0 0" axis="1 0 0" range="-0.26 0.26" actuatorfrcrange="-43 43"/>
                   <geom type="mesh" rgba="0.89412 0.89412 0.89412 1" mesh="left_ankle_roll_link"/>
                 </body>
               </body>
@@ -141,7 +144,7 @@
 
       <body name="waist_yaw_link" pos="0 0 0.0925">
         <inertial pos="0.00330607 3.2953e-05 0.0240554" quat="0.472045 0.472703 -0.52584 0.526515" mass="0.647976" diaginertia="0.000898217 0.000569953 0.000393183"/>
-        <joint name="waist_yaw_joint" class="waist_shoulder_elbow_x8_120" pos="0 0 0" axis="0 0 1" range="-2.09 2.09" actuatorfrcrange="-43 43"/>
+        <joint name="waist_yaw_joint" class="waist_shoulder_elbow_x8_120" pos="0 0 0" axis="0 0 1" range="-1.7 1.7" actuatorfrcrange="-43 43"/>
         <geom type="mesh" rgba="0.894118 0.894118 0.894118 1" mesh="waist_yaw_link"/>
         <body name="waist_roll_link" pos="0 0 0.0565">
           <inertial pos="-0.0020955 -1.01692e-09 6.53023e-05" quat="0.500415 0.499584 0.499584 0.500415" mass="0.314019" diaginertia="7.46769e-05 7.01388e-05 4.61557e-05"/>
@@ -171,7 +174,7 @@
                     <geom type="mesh" rgba="0.89412 0.89412 0.89412 1" mesh="right_elbow_link"/>
                     <body name="right_wrist_roll_link" pos="0.143 0.033 -0.01" quat="0.999999 0.0016104 0 0">
                       <inertial pos="0.0676937 -0.000403459 -0.00188681" quat="-0.000338432 0.703623 -0.00394149 0.710563" mass="0.792838" diaginertia="0.00157353 0.0012638 0.000504567"/>
-                      <joint name="right_wrist_roll_joint" class="ankle_wristroll_x6_60" pos="0 0 0" axis="1 0 0" range="-2.62 2.62" actuatorfrcrange="-20 20"/>
+                      <joint name="right_wrist_roll_joint" class="wristroll_x6_60" pos="0 0 0" axis="1 0 0" range="-2.62 2.62" actuatorfrcrange="-20 20"/>
                       <geom type="mesh" rgba="0.866667 0.909804 1 1" mesh="right_wrist_roll_link"/>
                       <body name="right_wrist_pitch_link" pos="0.1619 0 0" quat="0.999963 0 -0.0085544 0">
                         <inertial pos="0 -0.00024003 0.00028088" quat="0.707107 0.707107 0 0" mass="0.04881" diaginertia="3.6535e-06 3.2099e-06 1.4482e-06"/>
@@ -207,7 +210,7 @@
                     <geom type="mesh" rgba="0.89412 0.89412 0.89412 1" mesh="left_elbow_link"/>
                     <body name="left_wrist_roll_link" pos="0.143 -0.033 -0.01" quat="1 0.000127445 0 0">
                       <inertial pos="0.067733 0.00041243 -0.0018946" quat="0.000354909 0.703525 0.00409873 0.710658" mass="0.79263" diaginertia="0.00157282 0.00126321 0.00050429"/>
-                      <joint name="left_wrist_roll_joint" class="ankle_wristroll_x6_60" pos="0 0 0" axis="1 0 0" range="-2.62 2.62" actuatorfrcrange="-20 20"/>
+                      <joint name="left_wrist_roll_joint" class="wristroll_x6_60" pos="0 0 0" axis="1 0 0" range="-2.62 2.62" actuatorfrcrange="-20 20"/>
                       <geom type="mesh" rgba="0.86667 0.9098 1 1" mesh="left_wrist_roll_link"/>
                       <body name="left_wrist_pitch_link" pos="0.1619 0 0" quat="0.999925 0 0.0122712 0">
                         <inertial pos="3.0524e-06 0.00056822 -5.4706e-07" quat="0.707107 0.707107 0.000175033 -0.000175033" mass="0.04881" diaginertia="3.7865e-06 3.3444e-06 1.6518e-06"/>
@@ -251,14 +254,14 @@
     <motor name="right_hip_roll"       joint="right_hip_roll_joint"       ctrlrange="-85 85"/>
     <motor name="right_hip_yaw"        joint="right_hip_yaw_joint"        ctrlrange="-85 85"/>
     <motor name="right_knee"           joint="right_knee_joint"           ctrlrange="-85 85"/>
-    <motor name="right_ankle_pitch"    joint="right_ankle_pitch_joint"    ctrlrange="-20 20"/>
-    <motor name="right_ankle_roll"     joint="right_ankle_roll_joint"     ctrlrange="-20 20"/>
+    <motor name="right_ankle_pitch"    joint="right_ankle_pitch_joint"    ctrlrange="-43 43"/>
+    <motor name="right_ankle_roll"     joint="right_ankle_roll_joint"     ctrlrange="-43 43"/>
     <motor name="left_hip_pitch"       joint="left_hip_pitch_joint"       ctrlrange="-85 85"/>
     <motor name="left_hip_roll"        joint="left_hip_roll_joint"        ctrlrange="-85 85"/>
     <motor name="left_hip_yaw"         joint="left_hip_yaw_joint"         ctrlrange="-85 85"/>
     <motor name="left_knee"            joint="left_knee_joint"            ctrlrange="-85 85"/>
-    <motor name="left_ankle_pitch"     joint="left_ankle_pitch_joint"     ctrlrange="-20 20"/>
-    <motor name="left_ankle_roll"      joint="left_ankle_roll_joint"      ctrlrange="-20 20"/>
+    <motor name="left_ankle_pitch"     joint="left_ankle_pitch_joint"     ctrlrange="-43 43"/>
+    <motor name="left_ankle_roll"      joint="left_ankle_roll_joint"      ctrlrange="-43 43"/>
     <motor name="waist_yaw"            joint="waist_yaw_joint"            ctrlrange="-43 43"/>
     <motor name="waist_roll"           joint="waist_roll_joint"           ctrlrange="-43 43"/>
     <motor name="waist_pitch"          joint="waist_pitch_joint"          ctrlrange="-43 43"/>

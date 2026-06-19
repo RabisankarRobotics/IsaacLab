@@ -314,3 +314,67 @@ def randomize_arm_joint_targets(
             targets[:, i] = asset.data.joint_pos_target[env_ids, joint_ids_list[i]]
 
     asset.set_joint_position_target(targets, joint_ids=joint_ids_list, env_ids=env_ids)
+
+
+def stand_to_walk_command_curriculum(
+    env: "ManagerBasedRLEnv",
+    env_ids,
+    stand_until_iters: int = 2000,
+    slow_until_iters: int = 5000,
+    slow_scale: float = 0.3,
+    lin_vel_x_full: tuple[float, float] = (-1.0, 1.0),
+    lin_vel_y_full: tuple[float, float] = (-0.5, 0.5),
+    ang_vel_z_full: tuple[float, float] = (-0.5, 0.5),
+    rel_standing_envs_phase1: float = 1.0,
+    rel_standing_envs_phase2: float = 0.3,
+    rel_standing_envs_phase3: float = 0.1,
+) -> torch.Tensor:
+    """Three-phase command curriculum for sim-to-real DelayedPD training.
+
+    Phase 1 (iter 0 .. stand_until_iters):
+        Zero velocity commands in all axes. 100% standing envs. Policy learns
+        to hold balance under 0-30 ms actuator delay with no locomotion task.
+
+    Phase 2 (stand_until_iters .. slow_until_iters):
+        Command ranges scaled to ``slow_scale * full`` in all axes. ~30% of
+        envs still standing. Policy introduces slow walking while delay
+        handling is preserved.
+
+    Phase 3 (iter >= slow_until_iters):
+        Full command ranges in all axes. 10% standing envs.
+
+    Iteration count is derived from ``env.common_step_counter / 24`` (assumes
+    rsl_rl's default ``num_steps_per_env = 24``). Adjust the thresholds if you
+    use a different rollout length.
+
+    Mutates ``env.command_manager.get_term("base_velocity").cfg.ranges`` and
+    ``.rel_standing_envs`` in-place; the next ``_resample_command`` call picks
+    them up automatically. Returns the current phase (1/2/3) for logging.
+    """
+    steps_per_iter = 24  # rsl_rl PPO num_steps_per_env
+    iters = env.common_step_counter // steps_per_iter
+
+    cmd_term = env.command_manager.get_term("base_velocity")
+    cfg = cmd_term.cfg
+
+    if iters < stand_until_iters:
+        cfg.ranges.lin_vel_x = (0.0, 0.0)
+        cfg.ranges.lin_vel_y = (0.0, 0.0)
+        cfg.ranges.ang_vel_z = (0.0, 0.0)
+        cfg.rel_standing_envs = rel_standing_envs_phase1
+        phase = 1.0
+    elif iters < slow_until_iters:
+        s = slow_scale
+        cfg.ranges.lin_vel_x = (lin_vel_x_full[0] * s, lin_vel_x_full[1] * s)
+        cfg.ranges.lin_vel_y = (lin_vel_y_full[0] * s, lin_vel_y_full[1] * s)
+        cfg.ranges.ang_vel_z = (ang_vel_z_full[0] * s, ang_vel_z_full[1] * s)
+        cfg.rel_standing_envs = rel_standing_envs_phase2
+        phase = 2.0
+    else:
+        cfg.ranges.lin_vel_x = lin_vel_x_full
+        cfg.ranges.lin_vel_y = lin_vel_y_full
+        cfg.ranges.ang_vel_z = ang_vel_z_full
+        cfg.rel_standing_envs = rel_standing_envs_phase3
+        phase = 3.0
+
+    return torch.tensor(phase, device=env.device)

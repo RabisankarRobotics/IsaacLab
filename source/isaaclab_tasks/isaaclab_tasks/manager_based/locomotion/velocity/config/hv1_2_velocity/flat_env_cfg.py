@@ -165,6 +165,41 @@ class HV1_2VelocityEventCfg(EventCfg):
         },
     )
 
+    # ---- sim-to-real motor DR (startup: each env keeps a fixed motor identity
+    # for the whole training run, mimicking real hardware unit-to-unit spread).
+    # Both terms apply across all 32 joints (default SceneEntityCfg("robot")
+    # selects every joint via slice(None)).
+    #
+    # Stiffness / damping scale ×(0.8, 1.2) — i.e. ±20% Kp/Kd around the values
+    # declared on the actuator groups in HV1_2_CFG. Matches the small-bipedal
+    # reference. Wider than ±10% would risk PD instability on the X4/X6 groups.
+    actuator_gains_randomize = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "stiffness_distribution_params": (0.8, 1.2),
+            "damping_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    # Armature + Coulomb friction scale ×(0.8, 1.2). These are the joint-level
+    # physics parameters declared on each actuator group (armature/friction)
+    # and represent rotor inertia + Coulomb friction at the bearing. ±20%
+    # captures realistic unit-to-unit variation in gearhead/bearing assembly.
+    joint_params_randomize = EventTerm(
+        func=mdp.randomize_joint_parameters,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "friction_distribution_params": (0.8, 1.2),
+            "armature_distribution_params": (0.8, 1.2),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+
 
 @configclass
 class HV1_2VelocityRewardsCfg:
@@ -259,7 +294,11 @@ class HV1_2VelocityRewardsCfg:
     )
     # ---- stability ----
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
+    # Bumped -0.05 → -0.08 to target the residual upper-body backward-rocking
+    # sway observed after Phase 3 of the DelayedPD curriculum (the visible
+    # pelvis→torso oscillation while standing). 1.6× change — within the safe
+    # hot-resume band per [[feedback-ppo-reward-edits]].
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.08)
     # Weight progression: -2.0 → -2.5 → -3.0. Each step is 1.2-1.25× — within
     # the safe hot-resume band per [[feedback-ppo-reward-edits]]. flat_orientation
     # acts on the PELVIS body frame; the waist joints are PD-pinned at 0 by
@@ -388,6 +427,31 @@ class HV1_2VelocityRewardsCfg:
         weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_roll_joint$"])},
     )
+    # Added after Phase 3 DelayedPD policy showed ankle_roll deviating
+    # slightly inward (toes pointed medially) during stand and walk. No prior
+    # term targeted ankle_roll, so the policy treated it as a free DoF for
+    # static lateral balance. Weight -0.2 sits between hip_yaw (-0.1) and
+    # hip_roll (-0.4) — strong enough to pull ankle_roll toward 0 at rest,
+    # weak enough to let it move for lateral balance recovery during walking.
+    joint_deviation_ankle_roll = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.2,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_ankle_roll_joint$"])},
+    )
+    # Penalizes |waist_yaw / waist_roll / waist_pitch - 0|. Waist joints are
+    # PD-pinned at 0 (via pin_waist_target_reset event) but the policy doesn't
+    # directly actuate them — same indirect-influence pattern as
+    # flat_orientation_l2 (pelvis is also not directly actuated). With
+    # DelayedPDActuator the waist PD has phase lag → the pelvis perturbations
+    # from leg motion show up as waist joint deviation. Penalizing that
+    # deviation gives the policy a gradient toward "smoother leg control that
+    # doesn't perturb the pelvis" — targets the visible upper-body backward
+    # rocking sway under DelayedPD. Weight -0.1 same magnitude as hip_yaw.
+    joint_deviation_waist = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.1,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^waist_(yaw|roll|pitch)_joint$"])},
+    )
     # One-sided "no stilt-walk" penalty: penalize knees straighter than 0.4 rad.
     # Default rest bend is 0.36 rad, so even neutral pose triggers a tiny push to
     # bend more. Swing-leg knees naturally bend to 0.7-1.0 rad → 0 penalty during
@@ -508,22 +572,31 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # to "small but useful" so the policy is robust across mass / COM
         # variation without being asked to track an impossible target.
 
-        # ±3 kg around the 83 kg total — ≈ 3.6% body mass.
+        # Asymmetric mass DR: (-2, +5) kg around the 83 kg nominal. The positive
+        # bias reflects that real-robot mass typically exceeds CAD (cables,
+        # connectors, battery cell tolerance, paint/coatings); training mostly
+        # on slightly-heavier variants makes the deployed policy err on the
+        # safe side. Range is ≈ -2.4% / +6% body mass.
         self.events.add_base_mass.params["asset_cfg"].body_names = "pelvis"
-        self.events.add_base_mass.params["mass_distribution_params"] = (-3.0, 3.0)
+        self.events.add_base_mass.params["mass_distribution_params"] = (-2.0, 5.0)
 
-        # ±3 cm horizontal, ±1 cm vertical pelvis COM offset.
+        # ±4 cm horizontal, ±1 cm vertical pelvis COM offset.
         self.events.base_com.params["asset_cfg"].body_names = "pelvis"
         self.events.base_com.params["com_range"] = {
-            "x": (-0.03, 0.03),
-            "y": (-0.03, 0.03),
+            "x": (-0.04, 0.04),
+            "y": (-0.04, 0.04),
             "z": (-0.01, 0.01),
         }
 
-        # Re-target the reset-time external force/torque term (default ranges
-        # are 0/0, so this just keeps it from erroring out — push_robot does
-        # the actual mid-episode perturbation).
+        # Reset-time external force/torque on the pelvis — PERSISTENT bias for                                                                                        
+        # the whole episode (not an impulse), in world frame. Simulates steady                                                                                        
+        # disturbances like wind, cable/umbilical drag, or a small payload bias.                                                                                      
+        # force ±10 N  ≈ 1.2% body weight (per axis; ||F||_max ≈ 17.3 N)                                                                                            
+        # torque ±5 N·m ≈ moment of a 10 N off-center push at 0.5 m                                                                                                 
+        # push_robot still drives the impulsive mid-episode shoves.
         self.events.base_external_force_torque.params["asset_cfg"].body_names = "pelvis"
+        self.events.base_external_force_torque.params["force_range"] = (-10.0, 10.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-5.0, 5.0)
 
         # Widen ground friction randomization — single-bucket friction is too
         # narrow for "stable across environments". Static 0.4..1.2 covers
@@ -535,13 +608,17 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0),
-                "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0),
+                "x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.5, 0.5),
+                "roll": (-0.5, 0.5), "pitch": (-0.5, 0.5), "yaw": (-0.5, 0.5),
             },
         }
-        # push robot every 8-12 s for robustness
-        self.events.push_robot.interval_range_s = (8.0, 12.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}
+        # Stronger but less frequent push: ±1.0 m/s on x and y, every 12-15 s.
+        # Doubling the velocity magnitude from the previous ±0.5 forces a bigger
+        # disturbance recovery, while the wider interval gives the policy a
+        # multi-second window between hits to settle into steady gait — useful
+        # for an 83 kg robot where rapid back-to-back pushes can stack.
+        self.events.push_robot.interval_range_s = (12.0, 15.0)
+        self.events.push_robot.params = {"velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)}}
 
         # ---------------- terminations: only "pelvis" contact -----------------
         self.terminations.base_contact.params["sensor_cfg"].body_names = "pelvis"
@@ -557,8 +634,29 @@ class HV1_2VelocityFlatEnvCfg_PLAY(HV1_2VelocityFlatEnvCfg):
         super().__post_init__()
         self.scene.num_envs = 50
         self.scene.env_spacing = 2.5
+        # Obs corruption OFF for visual debugging — flip to True if you want
+        # the full sim2real conditions (IMU noise + encoder noise active).
         self.observations.policy.enable_corruption = False
-        self.events.push_robot = None
+        # Push robot ENABLED during play so you can visually verify push
+        # recovery. Use a shorter interval than training (6-8 s vs 12-15 s)
+        # so 2-3 pushes fire per 20 s episode and you actually see them.
+        # Same ±1.0 m/s magnitude as training.
+        self.events.push_robot.interval_range_s = (6.0, 8.0)
+        self.events.push_robot.params = {"velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)}}
+        # All other DR is INHERITED and stays active during play:
+        #   physics_material, add_base_mass, base_com,
+        #   actuator_gains_randomize, joint_params_randomize,
+        #   base_external_force_torque (steady ±10 N / ±5 N·m wrench),
+        #   reset_robot_joints, reset_base (random spawn pose + velocity).
+        # The 50 play envs therefore span the full motor/mass/friction
+        # distribution, with random spawn velocity, a steady pelvis wrench,
+        # and periodic pushes — same conditions the policy trained against.
+        # Disable the training command-phase curriculum during play.
+        # The curriculum function uses env.common_step_counter to decide which
+        # phase ranges to apply; in play that counter starts at 0, which would
+        # force Phase 1 (all-zero commands) and overwrite the play ranges set
+        # below, making every env stand still.
+        self.curriculum.command_phase = None
         # Spread the 50 envs across the FULL command space so you can visually
         # see forward / backward / sideways / turn gaits side-by-side. Each env
         # gets its own random command at reset; resample_time_range controls how

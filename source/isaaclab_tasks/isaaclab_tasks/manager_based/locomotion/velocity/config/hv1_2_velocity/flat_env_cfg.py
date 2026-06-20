@@ -298,7 +298,11 @@ class HV1_2VelocityRewardsCfg:
     # sway observed after Phase 3 of the DelayedPD curriculum (the visible
     # pelvis→torso oscillation while standing). 1.6× change — within the safe
     # hot-resume band per [[feedback-ppo-reward-edits]].
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.08)
+    # Bumped -0.08 → -0.12 to damp transient backward sway during walk-direction
+    # changes (the dynamic component of the backward tilt that flat_orientation_l2
+    # alone doesn't catch). 1.5× change — within the safe hot-resume band per
+    # [[feedback-ppo-reward-edits]].
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.12)
     # Weight progression: -2.0 → -2.5 → -3.0. Each step is 1.2-1.25× — within
     # the safe hot-resume band per [[feedback-ppo-reward-edits]]. flat_orientation
     # acts on the PELVIS body frame; the waist joints are PD-pinned at 0 by
@@ -312,7 +316,11 @@ class HV1_2VelocityRewardsCfg:
     # from static tilt growing. -3.0 directly pressures both static tilt and
     # transient rocking down. If 2k iters aren't enough, also bump ang_vel_xy_l2
     # (-0.05 → -0.1) to separately damp the dynamic component.
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-3.0)
+    # -3.0 → -4.0 after 14k iter under DR still showed visible backward tilt
+    # during backward + sideways walking. 1.33× — within the safe hot-resume
+    # band. Targets the static pelvis-pitch component of the backward lean
+    # (ang_vel_xy_l2 above targets the dynamic sway component).
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-4.0)
     # One-sided L1 "no-squat" penalty: zero when pelvis is at or above 0.92 m,
     # linear in shortfall below.
     #   normal walk at 0.93     → 0 penalty
@@ -427,15 +435,17 @@ class HV1_2VelocityRewardsCfg:
         weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_roll_joint$"])},
     )
-    # Added after Phase 3 DelayedPD policy showed ankle_roll deviating
-    # slightly inward (toes pointed medially) during stand and walk. No prior
-    # term targeted ankle_roll, so the policy treated it as a free DoF for
-    # static lateral balance. Weight -0.2 sits between hip_yaw (-0.1) and
-    # hip_roll (-0.4) — strong enough to pull ankle_roll toward 0 at rest,
-    # weak enough to let it move for lateral balance recovery during walking.
+    # -0.2 → -0.5 after 14k iter under DR still showed ~13° per-ankle inward
+    # roll (episode reward -0.0905 at weight -0.2 → ~0.45 rad L1 sum across
+    # both ankles). Hypothesis: policy is using inward ankle_roll to shift CoP
+    # laterally and counter the new ±10 N persistent world-frame pelvis wrench.
+    # Bumping weight 2.5× makes that compensation strategy expensive, forcing
+    # the policy to use hip_roll (which has the headroom and a smaller -0.4
+    # penalty) instead. Still leaves room for active ankle_roll during
+    # transient lateral-balance recovery while walking.
     joint_deviation_ankle_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.2,
+        weight=-0.5,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_ankle_roll_joint$"])},
     )
     # Penalizes |waist_yaw / waist_roll / waist_pitch - 0|. Waist joints are

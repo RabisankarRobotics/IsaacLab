@@ -350,12 +350,39 @@ def stand_to_walk_command_curriculum(
     Mutates ``env.command_manager.get_term("base_velocity").cfg.ranges`` and
     ``.rel_standing_envs`` in-place; the next ``_resample_command`` call picks
     them up automatically. Returns the current phase (1/2/3) for logging.
-    """
-    steps_per_iter = 24  # rsl_rl PPO num_steps_per_env
-    iters = env.common_step_counter // steps_per_iter
 
+    Auto-skip on resume: when the training script was launched with --resume
+    (or --checkpoint / --load_run), the curriculum jumps straight to Phase 3.
+    Rationale: env.common_step_counter is NOT restored from the rsl_rl
+    checkpoint, so on a fresh process it starts at 0 — that would force
+    Phase 1 (zero commands, 100% standing envs) and wipe the resumed
+    policy's walking ability over ~2000 iters of re-standing. The CLI
+    flag is the canonical signal that "this process is continuing a
+    trained policy", so we detect it once and pin Phase 3.
+    """
     cmd_term = env.command_manager.get_term("base_velocity")
     cfg = cmd_term.cfg
+
+    # One-time detection of --resume / --checkpoint / --load_run in sys.argv.
+    # Cached on the env so we only scan argv once per process.
+    if not hasattr(env, "_curriculum_resume_detected"):
+        import sys
+        argv = sys.argv
+        env._curriculum_resume_detected = (
+            "--resume" in argv
+            or any(a == "--checkpoint" or a.startswith("--checkpoint=") for a in argv)
+            or any(a == "--load_run" or a.startswith("--load_run=") for a in argv)
+        )
+
+    if env._curriculum_resume_detected:
+        cfg.ranges.lin_vel_x = lin_vel_x_full
+        cfg.ranges.lin_vel_y = lin_vel_y_full
+        cfg.ranges.ang_vel_z = ang_vel_z_full
+        cfg.rel_standing_envs = rel_standing_envs_phase3
+        return torch.tensor(3.0, device=env.device)
+
+    steps_per_iter = 24  # rsl_rl PPO num_steps_per_env
+    iters = env.common_step_counter // steps_per_iter
 
     if iters < stand_until_iters:
         cfg.ranges.lin_vel_x = (0.0, 0.0)

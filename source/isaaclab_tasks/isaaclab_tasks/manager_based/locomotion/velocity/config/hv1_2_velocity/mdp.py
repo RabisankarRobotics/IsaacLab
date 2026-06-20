@@ -363,16 +363,27 @@ def stand_to_walk_command_curriculum(
     cmd_term = env.command_manager.get_term("base_velocity")
     cfg = cmd_term.cfg
 
-    # One-time detection of --resume / --checkpoint / --load_run in sys.argv.
-    # Cached on the env so we only scan argv once per process.
+    # One-time detection of --resume / --checkpoint / --load_run in the
+    # original launch command. We CANNOT use sys.argv: train.py at
+    # scripts/reinforcement_learning/rsl_rl/train.py line 48 wipes it to
+    # `[script] + hydra_args` before this code runs, so the resume flags are
+    # gone by the time the curriculum is called. Read /proc/self/cmdline
+    # instead — the kernel keeps the original launch string intact regardless
+    # of Python-level argv reassignment. Falls back to sys.argv on non-Linux.
     if not hasattr(env, "_curriculum_resume_detected"):
-        import sys
-        argv = sys.argv
+        import os, sys
+        try:
+            with open("/proc/self/cmdline", "rb") as fh:
+                argv = fh.read().decode("utf-8", errors="replace").split("\x00")
+        except OSError:
+            argv = sys.argv  # non-Linux fallback
         env._curriculum_resume_detected = (
             "--resume" in argv
             or any(a == "--checkpoint" or a.startswith("--checkpoint=") for a in argv)
             or any(a == "--load_run" or a.startswith("--load_run=") for a in argv)
         )
+        if env._curriculum_resume_detected:
+            print("[curriculum] --resume detected → skipping stand→walk curriculum, jumping to Phase 3.")
 
     if env._curriculum_resume_detected:
         cfg.ranges.lin_vel_x = lin_vel_x_full

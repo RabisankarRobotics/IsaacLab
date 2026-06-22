@@ -186,16 +186,46 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     # in the hand-edited MJCF. NOT subtracted from Python PD kd — the small
     # double-count is consistent with how the real motor behaves.
     joint_viscous_friction = [0.0] * len(joint_names_isaac)
-    # Walk robot.actuators once to extract three per-joint tensors:
-    #   - viscous_friction (existing — passive damping in MJCF)
-    #   - stiffness / damping (NEW — overrides robot.data.joint_stiffness/damping
-    #     which are ZERO for explicit actuator types like DelayedPDActuatorCfg
-    #     and IdealPDActuatorCfg. Those actuators compute torque in Python; the
-    #     underlying USD joint drive runs as effort-mode with zero gains, so
-    #     robot.data.joint_stiffness reflects the USD drive, not the policy PD.
-    #     For implicit actuators robot.data already has the real gains, but the
-    #     actuator object also exposes the same values, so this override is
-    #     a no-op for them.)
+    # Walk robot.actuators to override per-joint motor params with the NOMINAL
+    # configured values from each actuator's .cfg (not the runtime tensors).
+    # Why .cfg and not the runtime tensor:
+    #   * robot.data.joint_stiffness/damping are ZERO for explicit actuators
+    #     (DelayedPDActuatorCfg / IdealPDActuatorCfg) — they run the PD in
+    #     Python and leave the underlying USD drive in effort-mode with no gains.
+    #   * act.stiffness / act.damping / act.armature / act.friction at runtime
+    #     are the per-env tensors AFTER startup-mode DR events have been applied
+    #     (actuator_gains_randomize ±20%, joint_params_randomize ±20%). Reading
+    #     act.stiffness[0] therefore reports env 0's RANDOMIZED scaling, not the
+    #     nominal motor spec.
+    #   * Same story for effort_limit: robot.data.joint_effort_limits is the
+    #     USD-level limit (set to ~1e9 / infinity for explicit actuators because
+    #     they clamp in Python), while the real per-group limit lives on
+    #     act.cfg.effort_limit.
+    # Deploy needs nominal: the real robot has one fixed set of motors, not a
+    # randomized one, so the YAML must record the configured spec.
+    #
+    # _resolve_cfg_val handles the two cfg formats actuators accept:
+    #   * float (single value applied to all joints in the group) — the common case
+    #   * dict[str, float] (regex → value mapping) — used in some configs
+    import re as _re
+    def _resolve_cfg_val(cfg_val, joint_names_in_group, fallback=None):
+        if cfg_val is None:
+            return [fallback] * len(joint_names_in_group)
+        if isinstance(cfg_val, (int, float)):
+            return [float(cfg_val)] * len(joint_names_in_group)
+        if isinstance(cfg_val, dict):
+            out = []
+            for jname in joint_names_in_group:
+                matched = fallback
+                for pattern, val in cfg_val.items():
+                    if _re.fullmatch(pattern, jname) is not None:
+                        matched = float(val)
+                        break
+                out.append(matched)
+            return out
+        # Unknown format — fall back to per-joint repetition of stringified value.
+        return [fallback] * len(joint_names_in_group)
+
     if hasattr(robot, "actuators") and robot.actuators:
         for act_name, act in robot.actuators.items():
             try:
@@ -206,19 +236,46 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
                     ids_list = jids.tolist()
                 else:
                     ids_list = list(jids)
-                vf = act.viscous_friction[0].detach().cpu().numpy() if hasattr(act, "viscous_friction") else None
-                if vf is not None:
-                    for local_idx, isaac_idx in enumerate(ids_list):
-                        joint_viscous_friction[isaac_idx] = float(vf[local_idx])
-                # Override Kp/Kd from the actuator object (real policy PD gains).
-                kp = act.stiffness[0].detach().cpu().numpy() if hasattr(act, "stiffness") else None
-                kd = act.damping[0].detach().cpu().numpy() if hasattr(act, "damping") else None
-                if kp is not None:
-                    for local_idx, isaac_idx in enumerate(ids_list):
-                        joint_stiffness[isaac_idx] = float(kp[local_idx])
-                if kd is not None:
-                    for local_idx, isaac_idx in enumerate(ids_list):
-                        joint_damping[isaac_idx] = float(kd[local_idx])
+                joint_names_in_group = [joint_names_isaac[i] for i in ids_list]
+                cfg = act.cfg if hasattr(act, "cfg") else None
+
+                def _set(arr, attr_name, fallback_runtime_tensor=None):
+                    """Write resolved cfg value for this group into arr at ids_list positions."""
+                    cfg_val = getattr(cfg, attr_name, None) if cfg is not None else None
+                    if cfg_val is not None:
+                        vals = _resolve_cfg_val(cfg_val, joint_names_in_group, fallback=None)
+                        for local_idx, isaac_idx in enumerate(ids_list):
+                            if vals[local_idx] is not None:
+                                arr[isaac_idx] = float(vals[local_idx])
+                        return
+                    # Fall back to runtime tensor only if cfg is unavailable.
+                    if fallback_runtime_tensor is not None:
+                        vals = fallback_runtime_tensor[0].detach().cpu().numpy()
+                        for local_idx, isaac_idx in enumerate(ids_list):
+                            arr[isaac_idx] = float(vals[local_idx])
+
+                # Kp / Kd — the policy PD gains. Real deploy uses these directly.
+                _set(joint_stiffness, "stiffness",
+                     fallback_runtime_tensor=getattr(act, "stiffness", None))
+                _set(joint_damping, "damping",
+                     fallback_runtime_tensor=getattr(act, "damping", None))
+                # Motor physics — written into MJCF; deploy uses for safety clamps.
+                if joint_armature is not None:
+                    _set(joint_armature, "armature",
+                         fallback_runtime_tensor=getattr(act, "armature", None))
+                if joint_friction is not None:
+                    _set(joint_friction, "friction",
+                         fallback_runtime_tensor=getattr(act, "friction", None))
+                _set(joint_viscous_friction, "viscous_friction",
+                     fallback_runtime_tensor=getattr(act, "viscous_friction", None))
+                # Effort limit — robot.data reports the USD limit (huge / inf for
+                # explicit actuators). The per-group spec is on act.cfg.
+                if joint_effort_limit is not None:
+                    _set(joint_effort_limit, "effort_limit")
+                # Velocity limit — usually matches between cfg and robot.data, but
+                # override to be consistent (and correct if a cfg dict was used).
+                if joint_velocity_limit is not None:
+                    _set(joint_velocity_limit, "velocity_limit")
             except Exception as e:
                 print(f"  WARNING: actuator '{act_name}' extraction failed: {e}")
 

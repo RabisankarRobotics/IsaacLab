@@ -170,31 +170,34 @@ class HV1_2VelocityEventCfg(EventCfg):
     # Both terms apply across all 32 joints (default SceneEntityCfg("robot")
     # selects every joint via slice(None)).
     #
-    # Stiffness / damping scale ×(0.8, 1.2) — i.e. ±20% Kp/Kd around the values
-    # declared on the actuator groups in HV1_2_CFG. Matches the small-bipedal
-    # reference. Wider than ±10% would risk PD instability on the X4/X6 groups.
+    # Stiffness / damping scale ×(0.9, 1.1) — i.e. ±10% Kp/Kd. Halved from the
+    # earlier ±20% after the iter-12k run showed action_std growing from 0.68
+    # to 0.92 and tracking failing to converge: under heavy ±20% motor DR the
+    # policy had to hedge across too wide a distribution to commit to a precise
+    # gait. ±10% still gives meaningful unit-to-unit variation but lets the
+    # policy converge to a clean stationary policy. Once a converged baseline
+    # exists, can ramp back to ±20% in a second-stage refinement run.
     actuator_gains_randomize = EventTerm(
         func=mdp.randomize_actuator_gains,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "stiffness_distribution_params": (0.8, 1.2),
-            "damping_distribution_params": (0.8, 1.2),
+            "stiffness_distribution_params": (0.9, 1.1),
+            "damping_distribution_params": (0.9, 1.1),
             "operation": "scale",
             "distribution": "uniform",
         },
     )
-    # Armature + Coulomb friction scale ×(0.8, 1.2). These are the joint-level
-    # physics parameters declared on each actuator group (armature/friction)
-    # and represent rotor inertia + Coulomb friction at the bearing. ±20%
-    # captures realistic unit-to-unit variation in gearhead/bearing assembly.
+    # Armature + Coulomb friction scale ×(0.9, 1.1). Same ±10% halving as the
+    # actuator gains above, same reason. Joint-level physics variation is
+    # cheaper to ramp up later than to recover from a non-convergent run.
     joint_params_randomize = EventTerm(
         func=mdp.randomize_joint_parameters,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "friction_distribution_params": (0.8, 1.2),
-            "armature_distribution_params": (0.8, 1.2),
+            "friction_distribution_params": (0.9, 1.1),
+            "armature_distribution_params": (0.9, 1.1),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -418,6 +421,26 @@ class HV1_2VelocityRewardsCfg:
         weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
+    # Symmetry-only penalty on hip_yaw: zero when left/right mirror each other
+    # (the splayed-hip kinematic compensation), nonzero when both drift same
+    # direction (the body-yaw bias that produced the iter-12k circular-walking
+    # symptom). Complements joint_deviation_hip_yaw above, which penalizes
+    # magnitude regardless of sign and so cannot distinguish drift from
+    # compensation. preserve_order=True is REQUIRED — the function reads
+    # joint_pos[:, joint_ids] expecting two columns with stable left/right
+    # ordering; without preserve_order the ids could come back in arbitrary
+    # order across runs.
+    hip_yaw_lr_symmetry = RewTerm(
+        func=custom_mdp.hip_yaw_symmetry_l1,
+        weight=-0.5,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["left_hip_yaw_joint", "right_hip_yaw_joint"],
+                preserve_order=True,
+            ),
+        },
+    )
     # NEW (Path B primary signal): direct foot-direction reward.
     # For each foot, penalizes |yaw_misalignment_angle| between foot +X axis
     # and pelvis +X axis (both projected to horizontal). Foot-axis convention
@@ -617,17 +640,17 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # the whole episode (not an impulse), in world frame. Simulates steady
         # disturbances like wind, cable/umbilical drag, or a small payload bias.
         #
-        # Halved from the earlier ±10 N / ±5 N·m: at the larger magnitudes the
-        # policy regressed (mean reward 19.82 → 14.36, fall rate 22% → 35% over
-        # 20k iter) and adopted an inward-ankle-roll CoP-shifting compensation
-        # for the persistent lateral force. The 2.5× ankle_roll penalty bump
-        # failed to dislodge that strategy (deviation 0.45 → 0.42 rad), proving
-        # the wrench itself was forcing the behavior. ±5 N / ±2.5 N·m keeps
-        # meaningful sim2real disturbance signal but lets the policy stand at
-        # a near-neutral pose. push_robot still drives the impulsive shoves.
+        # Reduced ±5/±2.5 → ±2/±1 after the iter-12k run failed to converge
+        # under combined motor DR + persistent wrench. The persistent wrench
+        # is the most "directional" of the DR effects — every step of every
+        # episode the policy must produce a steady counter-torque keyed to that
+        # particular env's randomly-sampled wrench. With ±5 N that compensation
+        # is a meaningful fraction of the policy's bandwidth; halving to ±2 N
+        # frees that bandwidth for tracking. push_robot still provides the
+        # impulsive sim2real disturbance signal at lower duty cycle.
         self.events.base_external_force_torque.params["asset_cfg"].body_names = "pelvis"
-        self.events.base_external_force_torque.params["force_range"] = (-5.0, 5.0)
-        self.events.base_external_force_torque.params["torque_range"] = (-2.5, 2.5)
+        self.events.base_external_force_torque.params["force_range"] = (-2.0, 2.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-1.0, 1.0)
 
         # Widen ground friction randomization — single-bucket friction is too
         # narrow for "stable across environments". Static 0.4..1.2 covers
@@ -636,18 +659,16 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.physics_material.params["dynamic_friction_range"] = (0.3, 1.0)
 
         self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
-        # reset velocity_range halved+ from ±0.5 → ±0.2 translation, ±0.3 rotation.
-        # Previous ±0.5 m/s vertical + ±0.5 rad/s roll/pitch was a violent spawn
-        # (the robot started each episode mid-fall on z, mid-tumble on rpy) and
-        # contributed materially to the 35% base_contact termination rate seen
-        # after 20k iter under the heavier DR. Softer spawn keeps the random-
-        # initial-state robustness benefit without forcing the policy to
-        # immediately recover from a near-fall before learning anything.
+        # reset velocity_range halved again: ±0.2/±0.3 → ±0.1/±0.15. Pairs with
+        # the wrench and motor-gain reductions above — the goal is to remove
+        # noise from the early policy-learning signal so PPO can find a clean
+        # stationary policy. Random-initial-state robustness still present at
+        # this magnitude but no longer dominates the spawn-step dynamics.
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (-0.2, 0.2), "y": (-0.2, 0.2), "z": (-0.2, 0.2),
-                "roll": (-0.3, 0.3), "pitch": (-0.3, 0.3), "yaw": (-0.3, 0.3),
+                "x": (-0.1, 0.1), "y": (-0.1, 0.1), "z": (-0.1, 0.1),
+                "roll": (-0.15, 0.15), "pitch": (-0.15, 0.15), "yaw": (-0.15, 0.15),
             },
         }
         # Stronger but less frequent push: ±1.0 m/s on x and y, every 12-15 s.

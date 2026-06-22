@@ -38,11 +38,14 @@ class HV1_2VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        # Halved 0.01 → 0.005. Previous run let action_std grow to 2.66 because
-        # the entropy bonus made high-noise policies look attractive even when
-        # they tracked velocity poorly. Lower coef means PPO drops std as soon
-        # as a more deterministic policy gives better velocity reward.
-        entropy_coef=0.005,
+        # Halved 0.005 → 0.002. Earlier 0.005 was still letting action_std drift
+        # UP from 0.68 (iter 8k) to 0.92 (iter 12k) on a hot-resume with widened
+        # tracking stds — i.e. the policy preferred staying noisy because the
+        # entropy bonus + post-resume value-function shock made commitment
+        # unattractive. 0.002 cuts the entropy reward to a level where any real
+        # reduction in velocity-tracking error from a more deterministic policy
+        # wins out, forcing std to drop instead of climb.
+        entropy_coef=0.002,
         num_learning_epochs=5,
         num_mini_batches=4,
         # Halved from 1e-3 — slower per-step gradient drift, reduces the chance

@@ -166,6 +166,29 @@ def stand_still_base_ang_vel_l2(
     return sq * standing_mask
 
 
+def hip_yaw_symmetry_l1(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """L1 penalty on the SIGNED SUM of left/right hip_yaw — zero when mirrored.
+
+    Returns |q_left_hip_yaw + q_right_hip_yaw| per env. Catches the asymmetric
+    hip_yaw drift that produces a body-yaw bias during walking, without
+    penalizing the symmetric inward-rotation that the splayed-hip kinematics
+    requires (which joint_deviation_hip_yaw would penalize equally).
+
+    Symmetric compensation:   q_L = +δ, q_R = -δ   → sum = 0   → no penalty.
+    Asymmetric drift:         q_L ≈ q_R ≈ +δ      → sum = 2δ  → penalty fires.
+
+    asset_cfg.joint_ids must point to exactly two joints with
+    preserve_order=True so left/right ordering is stable. Use with a NEGATIVE
+    weight (typical -0.3 to -1.0).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    q = asset.data.joint_pos[:, asset_cfg.joint_ids]  # shape (N, 2)
+    return torch.abs(torch.sum(q, dim=1))
+
+
 def joint_deviation_turn_softened_l1(
     env: "ManagerBasedRLEnv",
     command_name: str,

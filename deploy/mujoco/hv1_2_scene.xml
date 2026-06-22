@@ -1,6 +1,6 @@
 <mujoco model="hv1_2 scene">
 
-  <include file="/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/urdf_mesh/hv1_2/hv1_2_without_ee/hv1_2.xml"/>
+  <include file="/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/urdf_mesh/hv1_2/hv1_2_without_ee_ankle_modified/hv1_2_ankle_modified.xml"/>
 
   <statistic center="0.0 0.0 1.0" extent="2.0"/>
 

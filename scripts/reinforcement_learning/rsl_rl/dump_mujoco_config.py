@@ -186,6 +186,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
     # in the hand-edited MJCF. NOT subtracted from Python PD kd — the small
     # double-count is consistent with how the real motor behaves.
     joint_viscous_friction = [0.0] * len(joint_names_isaac)
+    # Walk robot.actuators once to extract three per-joint tensors:
+    #   - viscous_friction (existing — passive damping in MJCF)
+    #   - stiffness / damping (NEW — overrides robot.data.joint_stiffness/damping
+    #     which are ZERO for explicit actuator types like DelayedPDActuatorCfg
+    #     and IdealPDActuatorCfg. Those actuators compute torque in Python; the
+    #     underlying USD joint drive runs as effort-mode with zero gains, so
+    #     robot.data.joint_stiffness reflects the USD drive, not the policy PD.
+    #     For implicit actuators robot.data already has the real gains, but the
+    #     actuator object also exposes the same values, so this override is
+    #     a no-op for them.)
     if hasattr(robot, "actuators") and robot.actuators:
         for act_name, act in robot.actuators.items():
             try:
@@ -200,8 +210,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlBaseRun
                 if vf is not None:
                     for local_idx, isaac_idx in enumerate(ids_list):
                         joint_viscous_friction[isaac_idx] = float(vf[local_idx])
+                # Override Kp/Kd from the actuator object (real policy PD gains).
+                kp = act.stiffness[0].detach().cpu().numpy() if hasattr(act, "stiffness") else None
+                kd = act.damping[0].detach().cpu().numpy() if hasattr(act, "damping") else None
+                if kp is not None:
+                    for local_idx, isaac_idx in enumerate(ids_list):
+                        joint_stiffness[isaac_idx] = float(kp[local_idx])
+                if kd is not None:
+                    for local_idx, isaac_idx in enumerate(ids_list):
+                        joint_damping[isaac_idx] = float(kd[local_idx])
             except Exception as e:
-                print(f"  WARNING: actuator '{act_name}' viscous_friction extraction failed: {e}")
+                print(f"  WARNING: actuator '{act_name}' extraction failed: {e}")
 
     # action — what subset of joints the policy outputs
     action_term = unwrapped.action_manager.get_term("joint_pos")

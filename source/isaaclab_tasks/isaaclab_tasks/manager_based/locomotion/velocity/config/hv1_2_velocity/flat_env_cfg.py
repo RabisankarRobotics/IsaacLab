@@ -217,7 +217,7 @@ class HV1_2VelocityRewardsCfg:
         # pressure to close the tracking gap, but the step from the
         # checkpoint's value-function expectation is small enough that PPO
         # won't panic-explore.
-        params={"command_name": "base_velocity", "std": 0.35},
+        params={"command_name": "base_velocity", "std": 0.5},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
@@ -227,7 +227,7 @@ class HV1_2VelocityRewardsCfg:
         # and the policy never learned to turn. With std=1.0 the reward stays
         # measurable while error is in the 1–2 rad/s range, giving PPO signal
         # to actually shrink yaw error.
-        params={"command_name": "base_velocity", "std": 0.5},
+        params={"command_name": "base_velocity", "std": 0.7},
     )
     # ---- gait: keep the bipedal single-stance reward (it got the robot
     # stepping) but dial weights down to G1-style values and ADD gait-shape

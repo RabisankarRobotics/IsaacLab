@@ -169,24 +169,44 @@ def stand_still_base_ang_vel_l2(
 def hip_yaw_symmetry_l1(
     env: "ManagerBasedRLEnv",
     asset_cfg: SceneEntityCfg,
+    command_name: str = "base_velocity",
+    turn_softness_std: float = 0.3,
 ) -> torch.Tensor:
-    """L1 penalty on the SIGNED SUM of left/right hip_yaw — zero when mirrored.
+    """L1 penalty on the SIGNED SUM of left/right hip_yaw — fires only when the
+    commanded yaw rate is small (i.e. during forward / sideways walking).
 
-    Returns |q_left_hip_yaw + q_right_hip_yaw| per env. Catches the asymmetric
-    hip_yaw drift that produces a body-yaw bias during walking, without
-    penalizing the symmetric inward-rotation that the splayed-hip kinematics
-    requires (which joint_deviation_hip_yaw would penalize equally).
+    Returns |q_left_hip_yaw + q_right_hip_yaw| * exp(-(wz_cmd/std)²) per env.
 
-    Symmetric compensation:   q_L = +δ, q_R = -δ   → sum = 0   → no penalty.
-    Asymmetric drift:         q_L ≈ q_R ≈ +δ      → sum = 2δ  → penalty fires.
+    Why the softening (REQUIRED — penalty without it fights turning):
+    * Straight walking (wz_cmd ≈ 0): the symmetric-mirror pose has q_L = -q_R,
+      so |q_L + q_R| ≈ 0 ⇒ no penalty. An asymmetric drift (q_L ≈ q_R ≈ +δ)
+      that produces unwanted body yaw IS penalized. This is exactly what we
+      want to break the "walks in a circle when commanded forward" symptom.
+    * Commanded turning (wz_cmd large): turning ALSO produces a same-sign
+      hip_yaw bias (both yaw CCW for a left turn, both CW for right). Without
+      softening, the penalty would actively fight the track_ang_vel_z_exp
+      reward and the policy would turn awkwardly. The softness factor
+      exp(-(wz_cmd/std)²) dies smoothly as |wz_cmd| grows, returning hip_yaw
+      freedom to the policy precisely when the command needs it.
 
-    asset_cfg.joint_ids must point to exactly two joints with
-    preserve_order=True so left/right ordering is stable. Use with a NEGATIVE
-    weight (typical -0.3 to -1.0).
+    With turn_softness_std=0.3:
+      wz_cmd = 0.00 → softness 1.00 (full penalty — straight walking)
+      wz_cmd = 0.15 → softness 0.78
+      wz_cmd = 0.30 → softness 0.37
+      wz_cmd = 0.50 → softness 0.06 (essentially off — full turn allowed)
+
+    asset_cfg.joint_ids must point to exactly two joints (left, right) with
+    preserve_order=True so the ordering is stable. Use with a NEGATIVE weight
+    (typical -0.3 to -1.0).
     """
     asset: Articulation = env.scene[asset_cfg.name]
     q = asset.data.joint_pos[:, asset_cfg.joint_ids]  # shape (N, 2)
-    return torch.abs(torch.sum(q, dim=1))
+    sym_violation = torch.abs(torch.sum(q, dim=1))
+
+    command = env.command_manager.get_command(command_name)
+    wz_cmd = command[:, 2]  # base_velocity command is [vx, vy, wz]
+    softness = torch.exp(-(wz_cmd * wz_cmd) / (turn_softness_std ** 2))
+    return sym_violation * softness
 
 
 def joint_deviation_turn_softened_l1(

@@ -435,17 +435,18 @@ class HV1_2VelocityRewardsCfg:
         weight=-0.4,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_roll_joint$"])},
     )
-    # -0.2 → -0.5 after 14k iter under DR still showed ~13° per-ankle inward
-    # roll (episode reward -0.0905 at weight -0.2 → ~0.45 rad L1 sum across
-    # both ankles). Hypothesis: policy is using inward ankle_roll to shift CoP
-    # laterally and counter the new ±10 N persistent world-frame pelvis wrench.
-    # Bumping weight 2.5× makes that compensation strategy expensive, forcing
-    # the policy to use hip_roll (which has the headroom and a smaller -0.4
-    # penalty) instead. Still leaves room for active ankle_roll during
-    # transient lateral-balance recovery while walking.
+    # Weight history: -0.2 → -0.5 → -0.3. The -0.5 bump (2.5×) was supposed to
+    # break the inward-ankle-roll compensation but failed: over 20k iter the
+    # deviation only dropped 0.45 → 0.42 rad (5%), while the reward cost grew
+    # 2.3× — i.e. the policy paid more but couldn't change behavior, because
+    # the underlying need (resist persistent ±10 N pelvis wrench by shifting
+    # CoP laterally) was structural. Now that the wrench has been halved to
+    # ±5 N, the policy no longer needs the inward-roll compensation as much,
+    # so a moderate -0.3 (1.5× original) is enough pressure to pull ankle_roll
+    # toward zero without paying for an unattainable target.
     joint_deviation_ankle_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.5,
+        weight=-0.3,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_ankle_roll_joint$"])},
     )
     # Penalizes |waist_yaw / waist_roll / waist_pitch - 0|. Waist joints are
@@ -478,20 +479,17 @@ class HV1_2VelocityRewardsCfg:
         },
     )
     # "Be still when commanded to stand." Active only when ||cmd_vel|| < 0.1
-    # (i.e. the standing-env subset). Penalizes L1 deviation of the swing-relevant
-    # leg joints from default. Kills the parade-march at v_cmd=0 directly —
-    # complements the foot_clearance weight drop (which removes the *reward*
-    # for marching; this adds the *anti-reward*).
+    # (i.e. the standing-env subset). Penalizes L1 deviation of the listed
+    # leg joints from default.
     #
-    # Joint list narrowed: hip_pitch + knee only. ankle_pitch REMOVED.
-    # Previous (hip_pitch + knee + ankle_pitch) over-constrained static
-    # balance — the policy couldn't adjust ankle_pitch to put CoM over foot
-    # midpoint, so it settled into a marginally-balanced backward-tilted
-    # standing posture (the "lean back + drift back to balance" symptom).
-    # Freeing ankle_pitch lets the policy use ankle torque to actively
-    # balance pitch at standstill, while hip_pitch + knee stay pinned to
-    # prevent the parade-march / squat-walk failure mode this term targets.
-    # hip_roll and ankle_roll remain free for lateral static balance.
+    # Joint coverage expanded to ALL 12 leg joints (was hip_pitch + knee only).
+    # Previously we kept hip_roll / ankle_pitch / ankle_roll free for lateral
+    # static balance, but with the persistent wrench now halved (±5 N from
+    # ±10 N) the policy no longer needs to use the freed DoFs for CoP
+    # shifting. Pinning all 12 joints at standstill is what makes the body
+    # actually FREEZE — without it, the freed joints micro-cycle to balance
+    # and produce visible sway. Pairs with the new stand_still_base_ang_vel
+    # term below: this kills joint motion, that kills base motion.
     stand_still_no_cmd = RewTerm(
         func=custom_mdp.stand_still_joint_deviation_l1,
         weight=-2.0,
@@ -500,8 +498,25 @@ class HV1_2VelocityRewardsCfg:
             "command_threshold": 0.1,
             "asset_cfg": SceneEntityCfg(
                 "robot",
-                joint_names=["^(left|right)_(hip_pitch|knee)_joint$"],
+                joint_names=[
+                    "^(left|right)_(hip_yaw|hip_roll|hip_pitch|knee|ankle_pitch|ankle_roll)_joint$",
+                ],
             ),
+        },
+    )
+    # NEW: kill the standing SWAY directly. Penalizes ||base_ang_vel||^2 with
+    # a 0/1 mask gated to ||cmd_vel|| < 0.1, so the term fires only at
+    # standstill and is completely inactive during walking (no interference
+    # with gait dynamics). Weight -2.0 is moderate — the goal is "visibly
+    # reduced sway", not a frozen-rigid stance. If after 10k iter sway is
+    # still too visible, bump to -3.0 or -5.0; if walking gait degrades
+    # (shouldn't, due to the mask) back off to -1.0.
+    stand_still_base_ang_vel = RewTerm(
+        func=custom_mdp.stand_still_base_ang_vel_l2,
+        weight=-2.0,
+        params={
+            "command_name": "base_velocity",
+            "command_threshold": 0.1,
         },
     )
 
@@ -598,15 +613,21 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
             "z": (-0.01, 0.01),
         }
 
-        # Reset-time external force/torque on the pelvis — PERSISTENT bias for                                                                                        
-        # the whole episode (not an impulse), in world frame. Simulates steady                                                                                        
-        # disturbances like wind, cable/umbilical drag, or a small payload bias.                                                                                      
-        # force ±10 N  ≈ 1.2% body weight (per axis; ||F||_max ≈ 17.3 N)                                                                                            
-        # torque ±5 N·m ≈ moment of a 10 N off-center push at 0.5 m                                                                                                 
-        # push_robot still drives the impulsive mid-episode shoves.
+        # Reset-time external force/torque on the pelvis — PERSISTENT bias for
+        # the whole episode (not an impulse), in world frame. Simulates steady
+        # disturbances like wind, cable/umbilical drag, or a small payload bias.
+        #
+        # Halved from the earlier ±10 N / ±5 N·m: at the larger magnitudes the
+        # policy regressed (mean reward 19.82 → 14.36, fall rate 22% → 35% over
+        # 20k iter) and adopted an inward-ankle-roll CoP-shifting compensation
+        # for the persistent lateral force. The 2.5× ankle_roll penalty bump
+        # failed to dislodge that strategy (deviation 0.45 → 0.42 rad), proving
+        # the wrench itself was forcing the behavior. ±5 N / ±2.5 N·m keeps
+        # meaningful sim2real disturbance signal but lets the policy stand at
+        # a near-neutral pose. push_robot still drives the impulsive shoves.
         self.events.base_external_force_torque.params["asset_cfg"].body_names = "pelvis"
-        self.events.base_external_force_torque.params["force_range"] = (-10.0, 10.0)
-        self.events.base_external_force_torque.params["torque_range"] = (-5.0, 5.0)
+        self.events.base_external_force_torque.params["force_range"] = (-5.0, 5.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-2.5, 2.5)
 
         # Widen ground friction randomization — single-bucket friction is too
         # narrow for "stable across environments". Static 0.4..1.2 covers
@@ -615,11 +636,18 @@ class HV1_2VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.physics_material.params["dynamic_friction_range"] = (0.3, 1.0)
 
         self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
+        # reset velocity_range halved+ from ±0.5 → ±0.2 translation, ±0.3 rotation.
+        # Previous ±0.5 m/s vertical + ±0.5 rad/s roll/pitch was a violent spawn
+        # (the robot started each episode mid-fall on z, mid-tumble on rpy) and
+        # contributed materially to the 35% base_contact termination rate seen
+        # after 20k iter under the heavier DR. Softer spawn keeps the random-
+        # initial-state robustness benefit without forcing the policy to
+        # immediately recover from a near-fall before learning anything.
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.5, 0.5),
-                "roll": (-0.5, 0.5), "pitch": (-0.5, 0.5), "yaw": (-0.5, 0.5),
+                "x": (-0.2, 0.2), "y": (-0.2, 0.2), "z": (-0.2, 0.2),
+                "roll": (-0.3, 0.3), "pitch": (-0.3, 0.3), "yaw": (-0.3, 0.3),
             },
         }
         # Stronger but less frequent push: ±1.0 m/s on x and y, every 12-15 s.

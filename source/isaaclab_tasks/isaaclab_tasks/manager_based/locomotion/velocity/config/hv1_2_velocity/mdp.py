@@ -137,6 +137,35 @@ def stand_still_joint_deviation_l1(
     return deviation * standing_mask
 
 
+def stand_still_base_ang_vel_l2(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L2 penalty on base angular velocity, gated to standing commands only.
+
+    Returns ||base_ang_vel||^2 per env, multiplied by a 0/1 mask that fires
+    only when ||cmd_vel||_xyz < command_threshold.
+
+    Targets the visible standing sway directly. The always-on ang_vel_xy_l2
+    (weight -0.12) damps angular velocity in general, but its weight has to
+    stay small because walking gait naturally produces base angular velocity.
+    This term fires only at standstill, so it can be much stronger without
+    fighting the walking dynamics.
+
+    Use with a NEGATIVE weight (typical -2 to -5).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    cmd_norm = torch.norm(command[:, :3], dim=1)
+    standing_mask = (cmd_norm < command_threshold).float()
+
+    ang_vel = asset.data.root_ang_vel_b  # body-frame angular velocity (3-vec)
+    sq = torch.sum(ang_vel * ang_vel, dim=1)
+    return sq * standing_mask
+
+
 def joint_deviation_turn_softened_l1(
     env: "ManagerBasedRLEnv",
     command_name: str,

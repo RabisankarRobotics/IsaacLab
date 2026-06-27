@@ -232,6 +232,10 @@ class G1FlatLegs29DofEnvCfg(G1RoughEnvCfg):
 
         # Use the 29-DOF model instead of the minimal model.
         self.scene.robot = G1_29DOF_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        # G1_29DOF_CFG ships with contact sensors disabled (it targets
+        # manipulation tasks). The velocity env attaches a foot contact sensor,
+        # so enable the contact reporter API on the robot bodies.
+        self.scene.robot.spawn.activate_contact_sensors = True
 
         # The minimal-model finger deviation term has no 29-DOF counterpart.
         self.rewards.joint_deviation_fingers = None

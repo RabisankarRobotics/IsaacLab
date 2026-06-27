@@ -47,3 +47,23 @@ class G1FlatPPORunnerCfg(G1RoughPPORunnerCfg):
         self.experiment_name = "g1_flat"
         self.policy.actor_hidden_dims = [256, 128, 128]
         self.policy.critic_hidden_dims = [256, 128, 128]
+
+
+@configclass
+class G1FlatLegs29DofPPORunnerCfg(G1FlatPPORunnerCfg):
+    # Asymmetric actor-critic: the actor reads the deploy-safe `policy` group
+    # (no base_lin_vel), the critic reads the privileged `critic` group.
+    # Without this mapping RSL-RL feeds `policy` to both, ignoring the critic
+    # group and defeating the asymmetric setup.
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        self.experiment_name = "g1_flat_legs_29dof"
+        # Harder than stock flat G1 (omnidirectional + heavy upper-body /
+        # push DR), so it needs more samples to converge AND to harden against
+        # the arm-motion disturbance. A basic gait appears by ~2k iters;
+        # robustness keeps improving past that. Watch TensorBoard and stop at
+        # the reward/episode-length plateau — this is an upper bound, not a fixed run.
+        self.max_iterations = 8000

@@ -35,10 +35,12 @@ from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from ...velocity_env_cfg import ObservationsCfg as VelocityObservationsCfg
+from . import mdp as custom_mdp
 from .rough_env_cfg import G1Rewards, G1RoughEnvCfg
 
 ##
@@ -219,6 +221,63 @@ class G1Legs29DofRewards(G1Rewards):
         params={"asset_cfg": SceneEntityCfg("robot", joint_names="waist_.*_joint")},
     )
 
+    # ===== Gait-shaping terms (ported from the tuned HV1.2 velocity task) =====
+
+    # Symmetric stepping: penalize variance in L/R air- and contact-time so one
+    # foot doesn't stay planted while the other does all the work.
+    feet_airtime_variance = RewTerm(
+        func=custom_mdp.air_time_variance_penalty,
+        weight=-1.0,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
+    )
+
+    # Crisp, visible swing-foot lift (clearer steps). Positive weight; only pays
+    # out while the foot is moving, so it doesn't reward marching in place.
+    foot_clearance = RewTerm(
+        func=custom_mdp.foot_clearance_reward,
+        weight=0.3,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "target_height": 0.07,
+            "std": 0.05,
+            "tanh_mult": 2.0,
+        },
+    )
+
+    # Anti-lock only: G1's knee default is already 0.30 rad, so the threshold is
+    # set *below* default (0.15) — it fires only when a knee approaches the
+    # near-straight forward-step pose (knee min limit is 0.061 rad), and is zero
+    # at the natural stance. This avoids forcing a permanent crouch. Light weight.
+    knee_too_straight = RewTerm(
+        func=custom_mdp.knee_too_straight_penalty,
+        weight=-0.5,
+        params={
+            "threshold": 0.15,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_knee_joint"]),
+        },
+    )
+
+    # Maintain a minimum lateral gap between the feet (no crossing / scissoring),
+    # measured in the yaw frame so forward stride length isn't penalized.
+    # Measured natural lateral foot separation for G1 is ~0.236 m; min_distance
+    # is set to ~half (0.12) so it only catches scissoring, not normal swing.
+    feet_lateral_clearance = RewTerm(
+        func=custom_mdp.feet_lateral_distance_clearance,
+        weight=-2.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "min_distance": 0.12,
+        },
+    )
+
+    # Pull the ankle-roll joints toward flat (0 rad) — fixes the feet rolling
+    # inward / walking on the inner edges.
+    joint_deviation_ankle_roll = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.3,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_ankle_roll_joint"])},
+    )
+
 
 @configclass
 class G1FlatLegs29DofEnvCfg(G1RoughEnvCfg):
@@ -256,7 +315,10 @@ class G1FlatLegs29DofEnvCfg(G1RoughEnvCfg):
         self.curriculum.terrain_levels = None
 
         # ----- Rewards (mirror of G1FlatEnvCfg tuning) -----
-        self.rewards.track_ang_vel_z_exp.weight = 1.0
+        # Yaw tracking was the weak dimension (error_vel_yaw ~1.0, plateaued):
+        # the term was under-weighted at 1.0 vs stock G1's 2.0 while this task is
+        # harder (full omnidirectional commands). Bump to prioritize turning.
+        self.rewards.track_ang_vel_z_exp.weight = 1.5
         self.rewards.lin_vel_z_l2.weight = -0.2
         self.rewards.action_rate_l2.weight = -0.005
         self.rewards.dof_acc_l2.weight = -1.0e-7
@@ -265,6 +327,23 @@ class G1FlatLegs29DofEnvCfg(G1RoughEnvCfg):
         self.rewards.dof_torques_l2.weight = -2.0e-6
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=[".*_hip_.*", ".*_knee_joint"]
+        )
+
+        # ----- Terminations: stop the "sit and survive" local optimum -----
+        # The stock config only terminates on torso_link ground contact. The
+        # legs-only walker can collapse into an L-shape (legs flat on the floor,
+        # pelvis upright) where the torso never touches the ground, so the
+        # episode never ends and the policy farms reward while lying down.
+        # Terminate when the pelvis drops well below its 0.75 m nominal height
+        # (collapsed) or when the base tilts too far over.
+        # root_height_below_minimum reads the root (pelvis) world height.
+        self.terminations.base_height = DoneTerm(
+            func=mdp.root_height_below_minimum,
+            params={"minimum_height": 0.5},
+        )
+        self.terminations.bad_orientation = DoneTerm(
+            func=mdp.bad_orientation,
+            params={"limit_angle": 1.0},  # ~57 deg of base tilt
         )
 
         # ----- Commands: full omnidirectional walking -----
@@ -348,10 +427,10 @@ class G1FlatLegs29DofEnvCfg_PLAY(G1FlatLegs29DofEnvCfg):
         # disable randomization for play
         self.observations.policy.enable_corruption = False
         # remove random pushing
-        self.events.base_external_force_torque = None
-        self.events.push_robot = None
-        # standalone-walking demo: keep the arms parked at default (zero), the
-        # same condition as deploying the walker without a manipulation policy.
-        self.events.randomize_arm_pose = None
-        self.events.randomize_waist_pose = None
-        self.events.move_arms = None
+        # self.events.base_external_force_torque = None
+        # self.events.push_robot = None
+        # # standalone-walking demo: keep the arms parked at default (zero), the
+        # # same condition as deploying the walker without a manipulation policy.
+        # self.events.randomize_arm_pose = None
+        # self.events.randomize_waist_pose = None
+        # self.events.move_arms = None

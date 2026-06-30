@@ -315,19 +315,60 @@ class G1FlatLegs29DofEnvCfg(G1RoughEnvCfg):
         self.curriculum.terrain_levels = None
 
         # ----- Rewards (mirror of G1FlatEnvCfg tuning) -----
-        # Yaw tracking was the weak dimension (error_vel_yaw ~1.0, plateaued):
-        # the term was under-weighted at 1.0 vs stock G1's 2.0 while this task is
-        # harder (full omnidirectional commands). Bump to prioritize turning.
-        self.rewards.track_ang_vel_z_exp.weight = 1.5
+        # Yaw tracking was the weak dimension AND the cause of "veers when given
+        # only vx": with weak yaw tracking the policy lets a small yaw rate creep
+        # in. Bump well above stock to firmly hold heading on straight commands.
+        self.rewards.track_ang_vel_z_exp.weight = 2.0
         self.rewards.lin_vel_z_l2.weight = -0.2
         self.rewards.action_rate_l2.weight = -0.005
         self.rewards.dof_acc_l2.weight = -1.0e-7
-        self.rewards.feet_air_time.weight = 0.75
-        self.rewards.feet_air_time.params["threshold"] = 0.4
+        # Longer, more deliberate steps (fixes the "small stepping"): reward more
+        # air time and require a slightly longer swing before it pays out.
+        self.rewards.feet_air_time.weight = 1.0
+        self.rewards.feet_air_time.params["threshold"] = 0.45
         self.rewards.dof_torques_l2.weight = -2.0e-6
         self.rewards.dof_torques_l2.params["asset_cfg"] = SceneEntityCfg(
             "robot", joint_names=[".*_hip_.*", ".*_knee_joint"]
         )
+
+        # ===== Walk-tall / natural-gait fixes =====
+        # (1) Anchor the pelvis near its natural standing height (0.784 m at the
+        #     default pose). This is THE fix for the crouched, over-bent-knee
+        #     gait: without it, heavy upper-body/push DR makes a low crouch the
+        #     stable local optimum. Target slightly below nominal so a little
+        #     stance flex is still allowed; raise target/weight if it still
+        #     crouches, lower them if the gait looks stiff/bouncy.
+        self.rewards.base_height = RewTerm(
+            func=mdp.base_height_l2,
+            weight=-25.0,
+            params={"target_height": 0.76},
+        )
+        # (2) Drop the knee-bend-forcing penalty. It was added to stop a
+        #     stiff-legged lock, but it pushes the knee toward MORE bend, which
+        #     is exactly the over-crouch you see. The base-height anchor above
+        #     now prevents collapse, so this is no longer needed.
+        self.rewards.knee_too_straight = None
+        # (3) Stronger L/R cadence symmetry (helps straight-line walking and a
+        #     symmetric step pattern).
+        self.rewards.feet_airtime_variance.weight = -1.5
+        # (4) STAND STILL at zero command. The velocity-tracking reward gives no
+        #     incentive to actually stop, so the gait limit-cycle keeps running
+        #     and the robot shuffles in place. This pulls the legs back to the
+        #     default stance whenever no velocity is commanded (full-command
+        #     gated, so turning in place is unaffected). Raise weight toward
+        #     -2.0 if it still shuffles; lower it if standing looks too rigid.
+        self.rewards.stand_still = RewTerm(
+            func=custom_mdp.stand_still_joint_deviation_l1,
+            weight=-1.0,
+            params={
+                "command_name": "base_velocity",
+                "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
+                "command_threshold": 0.1,
+            },
+        )
+        # Train standing more often (stock 2% -> 5% of envs get a zero command),
+        # so the stand-still term gets enough signal.
+        self.commands.base_velocity.rel_standing_envs = 0.05
 
         # ----- Terminations: stop the "sit and survive" local optimum -----
         # The stock config only terminates on torso_link ground contact. The
@@ -358,7 +399,11 @@ class G1FlatLegs29DofEnvCfg(G1RoughEnvCfg):
             func=randomize_and_hold_joint_pose,
             mode="reset",
             params={
-                "position_range": (-1.0, 1.0),
+                # Was ±1.0 rad (≈±57°). That full-range static offset, together
+                # with the mid-episode flailing below, made a defensive crouch
+                # the easy way to stay balanced. ±0.8 still covers a wide held
+                # arm posture without forcing the legs into a permanent crouch.
+                "position_range": (-0.8, 0.8),
                 "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
                 "set_state": True,
             },
@@ -379,9 +424,13 @@ class G1FlatLegs29DofEnvCfg(G1RoughEnvCfg):
         self.events.move_arms = EventTerm(
             func=randomize_and_hold_joint_pose,
             mode="interval",
-            interval_range_s=(2.0, 4.0),
+            # Slower retarget (was 2-4 s) and smaller range (was ±1.0) so the
+            # arms emulate a manipulation policy's smoother motion rather than
+            # violent flailing — enough reaction torque to harden the legs, not
+            # so much that crouching becomes the only way to survive.
+            interval_range_s=(3.0, 5.0),
             params={
-                "position_range": (-1.0, 1.0),
+                "position_range": (-0.6, 0.6),
                 "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
                 "set_state": False,
             },

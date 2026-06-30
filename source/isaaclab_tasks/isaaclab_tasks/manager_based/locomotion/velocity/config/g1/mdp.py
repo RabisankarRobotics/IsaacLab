@@ -97,6 +97,34 @@ def knee_too_straight_penalty(
     return shortfall.sum(dim=1)
 
 
+def stand_still_joint_deviation_l1(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Penalize leg-joint deviation from the default stance when NO velocity is
+    commanded — stops the robot stepping/shuffling in place while idle.
+
+    Unlike the stock ``stand_still_joint_deviation_l1`` (which gates on the
+    linear command ``[:, :2]`` only, and therefore wrongly fires during a
+    turn-in-place yaw command), this gates on the FULL command
+    ``[lin_x, lin_y, ang_z]``. So it is active only when the robot is told to
+    do nothing, and never penalizes a commanded turn.
+
+    Returns ``sum_j |q_j - q_default_j|`` over ``asset_cfg.joint_ids``, masked to
+    the envs whose total commanded velocity is below ``command_threshold``.
+    Use with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    is_standing = (torch.norm(command[:, :3], dim=1) < command_threshold).float()
+    q = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    q_def = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    deviation = torch.sum(torch.abs(q - q_def), dim=1)
+    return deviation * is_standing
+
+
 def feet_lateral_distance_clearance(
     env: "ManagerBasedRLEnv",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),

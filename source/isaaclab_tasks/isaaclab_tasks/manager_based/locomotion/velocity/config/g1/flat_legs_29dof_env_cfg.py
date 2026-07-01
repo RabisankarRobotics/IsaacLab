@@ -331,50 +331,45 @@ class G1FlatLegs29DofEnvCfg(G1RoughEnvCfg):
             "robot", joint_names=[".*_hip_.*", ".*_knee_joint"]
         )
 
-        # ===== Walk-tall / natural-gait fixes =====
-        # (1) Anchor the pelvis AT its natural standing height (~0.784 m at the
-        #     default pose). A target BELOW natural (the old 0.76) literally
-        #     rewards crouching — it pulls the pelvis down, which forces a bent
-        #     knee. Set it at natural height so the height reward stops paying for
-        #     the crouch. The stance-knee term (3) then does the active
-        #     straightening. Raise toward 0.80 for an even taller gait, lower if
-        #     it looks stiff/bouncy or walks on tiptoe.
+        # ===== Natural-gait fixes (v3: undo the locked-straight-knee overshoot) =====
+        # History: v1 crouched (Groucho, knees too bent). v2 added a
+        # contact-gated stance-knee EXTENSION penalty + raised the height target
+        # and overshot the other way — the stance knee LOCKED near-straight (its
+        # reward logged ~0.000 = fully satisfied), leaving the leg no knee travel
+        # to step with, so the robot stepped from the ANKLE on stiff legs. Stiff
+        # legs don't absorb impact, so it also fell constantly (~40%
+        # bad-orientation). v3 removes the straightening pressure and instead
+        # BOUNDS the knee on both sides so it cycles around its natural 0.30 rad
+        # bend on its own:
+        #
+        # (1) Height anchor. Keep the target at the natural standing height
+        #     (~0.784 m at the default pose) — that height ALREADY includes the
+        #     0.30 rad knee bend, so anchoring here does NOT fight the bend, it
+        #     only stops the pelvis dropping into a crouch. Weight softened
+        #     -25 -> -10: at -25 it pinned the height so rigidly that it killed
+        #     the natural per-step vertical bob and stiffened the gait. -10 still
+        #     resists crouch but lets the CoM breathe. Lower the target toward
+        #     0.75 if it still looks a touch tall; raise the weight back toward
+        #     -20 only if it starts crouching again.
         self.rewards.base_height = RewTerm(
             func=mdp.base_height_l2,
-            weight=-25.0,
+            weight=-10.0,
             params={"target_height": 0.78},
         )
-        # (2) Drop the knee-bend-forcing penalty. It was added to stop a
-        #     stiff-legged lock, but it pushes the knee toward MORE bend, which
-        #     is exactly the over-crouch you see. The base-height anchor above
-        #     now prevents collapse, so this is no longer needed.
-        self.rewards.knee_too_straight = None
-        # (2b) LESS KNEE BEND: extend the STANCE knee. The crouch walk keeps the
-        #      knee flexed the whole cycle and steps from the hip; this penalizes
-        #      a loaded (foot-on-ground) knee bent past ~0.25 rad, pulling the
-        #      stance leg tall and natural. It is contact-gated, so the SWING
-        #      knee is untouched and still flexes to clear the ground. Feet and
-        #      knees are passed as explicit L,R lists with preserve_order=True so
-        #      each foot gates its own knee. Raise threshold toward 0.30 (the
-        #      default knee angle) or lower the weight if the knee locks /
-        #      hyperextends; strengthen the weight if it still crouches.
-        self.rewards.knee_stance_extension = RewTerm(
-            func=custom_mdp.knee_bent_stance_penalty,
-            weight=-0.5,
-            params={
-                "sensor_cfg": SceneEntityCfg(
-                    "contact_forces",
-                    body_names=["left_ankle_roll_link", "right_ankle_roll_link"],
-                    preserve_order=True,
-                ),
-                "asset_cfg": SceneEntityCfg(
-                    "robot",
-                    joint_names=["left_knee_joint", "right_knee_joint"],
-                    preserve_order=True,
-                ),
-                "threshold": 0.25,
-            },
-        )
+        # (2) Remove the stance-knee EXTENSION penalty entirely — it is exactly
+        #     what locked the knee straight and forced the ankle-only step.
+        #     (`knee_stance_extension` is only ever created here, so not creating
+        #     it leaves the term absent.)
+        #
+        # (3) Anti-LOCK bound only. The class-level `knee_too_straight` term
+        #     (threshold 0.15, weight -0.5) is now left ACTIVE — we simply stop
+        #     disabling it. It fires ONLY when a knee straightens past 0.15 rad
+        #     (near the 0.061 rad min limit) and is ZERO at the natural 0.30 rad
+        #     bend, so it never forces a crouch — it just stops the knee locking
+        #     out. Combined with the height anchor above (which stops crouch),
+        #     the knee is bounded above and below and settles into its natural
+        #     cycling bend. If it STILL walks stiff-legged after this retrain,
+        #     bump that term's weight toward -1.0 (in G1Legs29DofRewards).
         # (3) Stronger L/R cadence symmetry (helps straight-line walking and a
         #     symmetric step pattern).
         self.rewards.feet_airtime_variance.weight = -1.5

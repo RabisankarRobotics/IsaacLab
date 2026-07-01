@@ -332,43 +332,88 @@ class G1FlatLegs29DofEnvCfg(G1RoughEnvCfg):
         )
 
         # ===== Walk-tall / natural-gait fixes =====
-        # (1) Anchor the pelvis near its natural standing height (0.784 m at the
-        #     default pose). This is THE fix for the crouched, over-bent-knee
-        #     gait: without it, heavy upper-body/push DR makes a low crouch the
-        #     stable local optimum. Target slightly below nominal so a little
-        #     stance flex is still allowed; raise target/weight if it still
-        #     crouches, lower them if the gait looks stiff/bouncy.
+        # (1) Anchor the pelvis AT its natural standing height (~0.784 m at the
+        #     default pose). A target BELOW natural (the old 0.76) literally
+        #     rewards crouching — it pulls the pelvis down, which forces a bent
+        #     knee. Set it at natural height so the height reward stops paying for
+        #     the crouch. The stance-knee term (3) then does the active
+        #     straightening. Raise toward 0.80 for an even taller gait, lower if
+        #     it looks stiff/bouncy or walks on tiptoe.
         self.rewards.base_height = RewTerm(
             func=mdp.base_height_l2,
             weight=-25.0,
-            params={"target_height": 0.76},
+            params={"target_height": 0.78},
         )
         # (2) Drop the knee-bend-forcing penalty. It was added to stop a
         #     stiff-legged lock, but it pushes the knee toward MORE bend, which
         #     is exactly the over-crouch you see. The base-height anchor above
         #     now prevents collapse, so this is no longer needed.
         self.rewards.knee_too_straight = None
+        # (2b) LESS KNEE BEND: extend the STANCE knee. The crouch walk keeps the
+        #      knee flexed the whole cycle and steps from the hip; this penalizes
+        #      a loaded (foot-on-ground) knee bent past ~0.25 rad, pulling the
+        #      stance leg tall and natural. It is contact-gated, so the SWING
+        #      knee is untouched and still flexes to clear the ground. Feet and
+        #      knees are passed as explicit L,R lists with preserve_order=True so
+        #      each foot gates its own knee. Raise threshold toward 0.30 (the
+        #      default knee angle) or lower the weight if the knee locks /
+        #      hyperextends; strengthen the weight if it still crouches.
+        self.rewards.knee_stance_extension = RewTerm(
+            func=custom_mdp.knee_bent_stance_penalty,
+            weight=-0.5,
+            params={
+                "sensor_cfg": SceneEntityCfg(
+                    "contact_forces",
+                    body_names=["left_ankle_roll_link", "right_ankle_roll_link"],
+                    preserve_order=True,
+                ),
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    joint_names=["left_knee_joint", "right_knee_joint"],
+                    preserve_order=True,
+                ),
+                "threshold": 0.25,
+            },
+        )
         # (3) Stronger L/R cadence symmetry (helps straight-line walking and a
         #     symmetric step pattern).
         self.rewards.feet_airtime_variance.weight = -1.5
         # (4) STAND STILL at zero command. The velocity-tracking reward gives no
         #     incentive to actually stop, so the gait limit-cycle keeps running
-        #     and the robot shuffles in place. This pulls the legs back to the
-        #     default stance whenever no velocity is commanded (full-command
-        #     gated, so turning in place is unaffected). Raise weight toward
-        #     -2.0 if it still shuffles; lower it if standing looks too rigid.
+        #     and the robot shuffles / drifts in place. Two complementary terms,
+        #     both full-command gated (turning in place is never penalized):
+        #
+        #   (4a) POSITION: pull the legs back to the default stance. This is what
+        #        stops the feet slowly creeping apart while idle ("legs
+        #        separating"). Strengthened -1.0 -> -2.0 because the drift means
+        #        the previous weight lost to the residual gait limit-cycle.
         self.rewards.stand_still = RewTerm(
             func=custom_mdp.stand_still_joint_deviation_l1,
-            weight=-1.0,
+            weight=-2.0,
             params={
                 "command_name": "base_velocity",
                 "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
                 "command_threshold": 0.1,
             },
         )
-        # Train standing more often (stock 2% -> 5% of envs get a zero command),
-        # so the stand-still term gets enough signal.
-        self.commands.base_velocity.rel_standing_envs = 0.05
+        #   (4b) VELOCITY: penalize leg-joint motion while idle. The position
+        #        term alone lets the legs oscillate around the default (mean
+        #        position ~correct but still moving) — that is the standing
+        #        "vibration". Penalizing joint velocity forces the legs to go
+        #        quiet. Start moderate; raise toward -1.0 if it still trembles.
+        self.rewards.stand_still_vel = RewTerm(
+            func=custom_mdp.stand_still_joint_vel_l1,
+            weight=-0.5,
+            params={
+                "command_name": "base_velocity",
+                "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
+                "command_threshold": 0.1,
+            },
+        )
+        # Actually TRAIN standing. 5% of envs was too little signal for a distinct
+        # skill, so at exactly-zero command the policy was near out-of-distribution
+        # (hence the vibration/drift). 15% makes standing a first-class behavior.
+        self.commands.base_velocity.rel_standing_envs = 0.15
 
         # ----- Terminations: stop the "sit and survive" local optimum -----
         # The stock config only terminates on torso_link ground contact. The

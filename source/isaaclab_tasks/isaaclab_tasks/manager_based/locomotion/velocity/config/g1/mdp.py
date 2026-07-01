@@ -97,6 +97,41 @@ def knee_too_straight_penalty(
     return shortfall.sum(dim=1)
 
 
+def knee_bent_stance_penalty(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    threshold: float = 0.25,
+) -> torch.Tensor:
+    """Penalize a STANCE knee (its foot is on the ground) bent beyond
+    ``threshold`` rad — pulls the load-bearing leg toward an extended, "tall"
+    stance posture, i.e. the natural walk. The SWING knee is not in contact, so
+    it is never penalized and stays free to flex for ground clearance.
+
+    This is the inverse of :func:`knee_too_straight_penalty`. It targets the
+    bent-knee "Groucho" crouch, where the pelvis rides low and the robot steps
+    from the hip with a permanently flexed knee instead of extending the knee to
+    support the body during stance.
+
+    ``sensor_cfg`` (feet) and ``asset_cfg`` (knees) MUST be built with matching
+    left-then-right order and ``preserve_order=True`` so that foot *i* gates knee
+    *i*. A mismatch would gate the swing knee by the stance foot and penalize the
+    necessary swing-phase flexion.
+
+    Returns ``sum_legs( in_contact_leg * max(0, knee_leg - threshold) )``.
+    Use with a NEGATIVE weight.
+    """
+    from isaaclab.sensors import ContactSensor
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # current_contact_time > 0 means the foot is currently on the ground (stance).
+    in_contact = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids] > 0.0  # (N, L)
+    knee = asset.data.joint_pos[:, asset_cfg.joint_ids]  # (N, L)
+    excess = torch.clamp(knee - threshold, min=0.0)  # only the "too bent" part
+    return torch.sum(excess * in_contact.float(), dim=1)
+
+
 def stand_still_joint_deviation_l1(
     env: "ManagerBasedRLEnv",
     command_name: str,
@@ -123,6 +158,32 @@ def stand_still_joint_deviation_l1(
     q_def = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
     deviation = torch.sum(torch.abs(q - q_def), dim=1)
     return deviation * is_standing
+
+
+def stand_still_joint_vel_l1(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Penalize leg-joint *velocity* when NO velocity is commanded — damps the
+    idle tremor/vibration that a pure position-deviation stand-still term misses.
+
+    The companion :func:`stand_still_joint_deviation_l1` pulls the *position*
+    back to the default stance, but a policy can hold the mean position while
+    still oscillating around it (the standing "vibration") — that oscillation is
+    exactly non-zero joint velocity. Penalizing ``sum_j |qd_j|`` while idle
+    forces the legs to actually go quiet, and (since drift is slow motion) also
+    helps stop the feet slowly creeping apart.
+
+    Full-command gated ``[lin_x, lin_y, ang_z]`` like its companion, so a
+    commanded turn-in-place is never penalized. Use with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    is_standing = (torch.norm(command[:, :3], dim=1) < command_threshold).float()
+    qd = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    return torch.sum(torch.abs(qd), dim=1) * is_standing
 
 
 def feet_lateral_distance_clearance(

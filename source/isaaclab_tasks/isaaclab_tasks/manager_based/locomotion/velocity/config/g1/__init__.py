@@ -79,3 +79,25 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatLegs29DofPPORunnerCfg",
     },
 )
+
+
+gym.register(
+    id="Isaac-Velocity-Flat-Legs-G1-29Dof-Clean-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.flat_legs_29dof_clean_env_cfg:G1FlatLegs29DofCleanEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatLegs29DofCleanPPORunnerCfg",
+    },
+)
+
+
+gym.register(
+    id="Isaac-Velocity-Flat-Legs-G1-29Dof-Clean-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.flat_legs_29dof_clean_env_cfg:G1FlatLegs29DofCleanEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatLegs29DofCleanPPORunnerCfg",
+    },
+)

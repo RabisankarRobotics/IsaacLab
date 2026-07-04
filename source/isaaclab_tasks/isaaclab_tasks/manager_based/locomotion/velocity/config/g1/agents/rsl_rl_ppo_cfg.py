@@ -67,3 +67,21 @@ class G1FlatLegs29DofPPORunnerCfg(G1FlatPPORunnerCfg):
         # robustness keeps improving past that. Watch TensorBoard and stop at
         # the reward/episode-length plateau — this is an upper bound, not a fixed run.
         self.max_iterations = 8000
+
+
+@configclass
+class G1FlatLegs29DofCleanPPORunnerCfg(G1FlatLegs29DofPPORunnerCfg):
+    """Runner for the clean-slate legs-only walk (stock reward recipe, no gait
+    shaping, forward-biased commands, DR off). Same asymmetric actor-critic and
+    policy dims as the sibling; only the experiment name + iteration budget
+    differ so its checkpoints/logs stay separate and it can seed the later
+    DR/omnidirectional hardening run."""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        self.experiment_name = "g1_flat_legs_29dof_clean"
+        # No DR and forward-biased commands — this is close to the stock flat G1
+        # walk, which converges fast. A clean gait usually appears well before
+        # 4k iters; stop at the reward/episode-length plateau.
+        self.max_iterations = 4000

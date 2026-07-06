@@ -405,6 +405,16 @@ class EventCfg:
         mode="reset",
         params={"position_range": (1.0, 1.0), "velocity_range": (-0.5, 0.5)},
     )
+    # The legs-only action term never sets a PD target for the upper body, and the
+    # framework inits every joint target to 0 — so without this the soft upper-body
+    # PD would pull the arms to angle 0 instead of the bent default pose (and mismatch
+    # the deploy). Seed the upper-body targets to default each reset; the target
+    # persists, so the soft PD holds them at the default pose all episode.
+    hold_upper_body_target = EventTerm(
+        func=custom_mdp.hold_joint_targets_at_default,
+        mode="reset",
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=UPPER_BODY_JOINT_NAMES)},
+    )
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",

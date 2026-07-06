@@ -367,3 +367,24 @@ def ang_vel_cmd_levels(
             ).tolist()
 
     return torch.tensor(ranges.ang_vel_z[1], device=env.device)
+
+
+def hold_joint_targets_at_default(
+    env: "ManagerBasedRLEnv",
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Set the PD *position target* of the given joints to their default pose at reset.
+
+    Required for joints NOT covered by an action term. IsaacLab initialises
+    ``joint_pos_target`` to ZERO and only the action term overwrites it (here: the
+    legs). Without this, the implicit PD would drive the un-actioned upper-body
+    joints toward joint-angle 0 instead of the default (bent-arm) pose — and it
+    would not match the deploy PD, which holds them at the default. The target
+    persists across steps, so writing it once per reset holds the joints at their
+    default for the whole episode (the soft PD lets them comply under gravity around
+    that target).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    default_pos = asset.data.default_joint_pos[env_ids][:, asset_cfg.joint_ids]
+    asset.set_joint_position_target(default_pos, joint_ids=asset_cfg.joint_ids, env_ids=env_ids)

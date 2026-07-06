@@ -388,3 +388,24 @@ def hold_joint_targets_at_default(
     asset: Articulation = env.scene[asset_cfg.name]
     default_pos = asset.data.default_joint_pos[env_ids][:, asset_cfg.joint_ids]
     asset.set_joint_position_target(default_pos, joint_ids=asset_cfg.joint_ids, env_ids=env_ids)
+
+
+def stand_still_penalty(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """L1 penalty on leg-joint deviation from the default stance while the robot is
+    commanded to stand still (``|command| < command_threshold``).
+
+    Stops the "march in place" reflex: the gait clock keeps ticking in the
+    observation, so without this the policy keeps stepping to the beat even at zero
+    command. Gated at the same threshold as ``feet_gait`` so walking is untouched.
+    Use with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    diff = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    penalty = torch.sum(torch.abs(diff), dim=1)
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    return penalty * (cmd_norm < command_threshold)

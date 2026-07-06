@@ -171,7 +171,7 @@ class CommandsCfg:
         debug_vis=False,
         # START tiny — the curriculum grows these toward limit_ranges.
         ranges=UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1)
+            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.2, 0.2)  # yaw starts wider to practice turning
         ),
         # Caps the curriculum. Forward-biased, modest strafe/yaw for a clean walk.
         limit_ranges=UniformLevelVelocityCommandCfg.Ranges(
@@ -260,7 +260,7 @@ class RewardsCfg:
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp,
-        weight=0.5,
+        weight=1.0,  # was 0.5 — raised to match linear so yaw stops being deprioritized
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     alive = RewTerm(func=mdp.is_alive, weight=0.15)
@@ -288,10 +288,17 @@ class RewardsCfg:
     )
 
     # -- posture
-    joint_deviation_hip = RewTerm(
+    # hip_roll kept strongly penalized (stops leg splay); hip_yaw only lightly
+    # penalized so the policy can actually use it to steer (fixes yaw tracking).
+    joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint", ".*_hip_yaw_joint"])},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint"])},
+    )
+    joint_deviation_hip_yaw = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.1,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"])},
     )
     flat_orientation = RewTerm(func=mdp.flat_orientation_l2, weight=-5.0)
     base_height = RewTerm(func=mdp.base_height_l2, weight=-10.0, params={"target_height": 0.78})
@@ -322,8 +329,19 @@ class RewardsCfg:
         params={
             "std": 0.05,
             "tanh_mult": 2.0,
-            "target_height": 0.1,
+            "target_height": 0.13,  # was 0.10 — lift the swing foot higher (more knee flex)
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+        },
+    )
+
+    # -- idle: stop the "parade" march. Penalize leg deviation from the default
+    #    stance while standing (command ~ 0). Gated at the same 0.1 as feet_gait.
+    stand_still = RewTerm(
+        func=custom_mdp.stand_still_penalty,
+        weight=-0.5,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
         },
     )
 

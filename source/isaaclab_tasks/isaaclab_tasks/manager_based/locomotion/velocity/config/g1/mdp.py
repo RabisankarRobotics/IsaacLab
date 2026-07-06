@@ -209,3 +209,161 @@ def feet_lateral_distance_clearance(
     rel_pos_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), rel_pos_w)
     lateral_distance = torch.abs(rel_pos_yaw[:, 1])  # (N,)
     return torch.clamp(min_distance - lateral_distance, min=0.0)
+
+
+# ===========================================================================
+# Ported from unitree_rl_lab (the reference G1 velocity recipe).
+#
+# These implement the phase-based gait shaping + energy penalty + velocity
+# command curriculum that give the unitree G1 walk its clean, rhythmic gait.
+# Used by ``flat_legs_29dof_clean_env_cfg.py``. Kept verbatim (modulo docs) so
+# the behavior matches the proven reference.
+# ===========================================================================
+
+
+def energy(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize mechanical power ``sum_j |joint_vel_j| * |applied_torque_j|``.
+
+    Pushes the policy toward an efficient, natural gait (a stiff-legged or
+    over-actuated gait burns more power). Use with a NEGATIVE weight. Scope
+    ``asset_cfg.joint_ids`` to the actuated leg joints so it never charges the
+    policy for torque the stiff PD spends holding the non-actioned arms/waist.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    qfrc = asset.data.applied_torque[:, asset_cfg.joint_ids]
+    return torch.sum(torch.abs(qvel) * torch.abs(qfrc), dim=-1)
+
+
+def feet_gait(
+    env: "ManagerBasedRLEnv",
+    period: float,
+    offset: list[float],
+    sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.5,
+    command_name: str | None = None,
+) -> torch.Tensor:
+    """Phase-based periodic gait reward — the core of the natural walk.
+
+    A fixed clock of length ``period`` seconds defines, per foot, when it SHOULD
+    be in stance vs swing. ``offset`` gives each foot's phase shift; ``[0.0,
+    0.5]`` puts the two feet in anti-phase (alternating steps). ``threshold`` is
+    the stance duty (fraction of the cycle a foot should be planted). Each
+    control step, every foot scores +1 when its actual contact matches the
+    scheduled state (stance & in-contact, OR swing & airborne), else 0.
+
+    This gives the policy a rhythmic scaffold; the knee/hip motion needed to
+    satisfy the rhythm emerges on its own — no per-joint angle clamping (that
+    was the crouch↔locked-knee trap). Use with a POSITIVE weight. The SAME phase
+    clock is exposed to the policy via :func:`gait_phase` so it can phase-lock.
+    Command-gated (``command_name``) so it does not force stepping while idle.
+
+    ``sensor_cfg.body_ids`` order pairs with ``offset`` order.
+    """
+    from isaaclab.sensors import ContactSensor
+
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    is_contact = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids] > 0
+
+    global_phase = ((env.episode_length_buf * env.step_dt) % period / period).unsqueeze(1)
+    phases = []
+    for offset_ in offset:
+        phase = (global_phase + offset_) % 1.0
+        phases.append(phase)
+    leg_phase = torch.cat(phases, dim=-1)
+
+    reward = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+    for i in range(len(sensor_cfg.body_ids)):
+        is_stance = leg_phase[:, i] < threshold
+        reward += ~(is_stance ^ is_contact[:, i])
+
+    if command_name is not None:
+        cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+        reward *= cmd_norm > 0.1
+    return reward
+
+
+def gait_phase(env: "ManagerBasedRLEnv", period: float) -> torch.Tensor:
+    """2-value (sin, cos) clock of the gait phase — the deploy-safe replacement
+    for an observation history.
+
+    Exposes the SAME phase clock :func:`feet_gait` scores against, so the policy
+    can time its steps without a history buffer. At deploy this is just a
+    free-running timer: ``phase = (t / period) % 1``, then ``[sin, cos]`` of
+    ``2*pi*phase`` — no encoder history required.
+    """
+    if not hasattr(env, "episode_length_buf"):
+        env.episode_length_buf = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+
+    global_phase = (env.episode_length_buf * env.step_dt) % period / period
+    phase = torch.zeros(env.num_envs, 2, device=env.device)
+    phase[:, 0] = torch.sin(global_phase * torch.pi * 2.0)
+    phase[:, 1] = torch.cos(global_phase * torch.pi * 2.0)
+    return phase
+
+
+def lin_vel_cmd_levels(
+    env: "ManagerBasedRLEnv",
+    env_ids,
+    reward_term_name: str = "track_lin_vel_xy",
+) -> torch.Tensor:
+    """Command curriculum: widen the linear-velocity command range by 0.1 m/s
+    per side once mean linear-tracking reward clears 80% of its weight.
+
+    Starts the robot on tiny commands (easy, clean slow walking) and grows the
+    range only as it earns it, up to ``cfg.limit_ranges``. Requires the command
+    term to be a ``UniformLevelVelocityCommandCfg`` (has ``limit_ranges``). The
+    reward term named ``reward_term_name`` must exist (default matches the
+    ``track_lin_vel_xy`` term in the clean env cfg).
+    """
+    command_term = env.command_manager.get_term("base_velocity")
+    ranges = command_term.cfg.ranges
+    limit_ranges = command_term.cfg.limit_ranges
+
+    reward_term = env.reward_manager.get_term_cfg(reward_term_name)
+    reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
+
+    if env.common_step_counter % env.max_episode_length == 0:
+        if reward > reward_term.weight * 0.8:
+            delta_command = torch.tensor([-0.1, 0.1], device=env.device)
+            ranges.lin_vel_x = torch.clamp(
+                torch.tensor(ranges.lin_vel_x, device=env.device) + delta_command,
+                limit_ranges.lin_vel_x[0],
+                limit_ranges.lin_vel_x[1],
+            ).tolist()
+            ranges.lin_vel_y = torch.clamp(
+                torch.tensor(ranges.lin_vel_y, device=env.device) + delta_command,
+                limit_ranges.lin_vel_y[0],
+                limit_ranges.lin_vel_y[1],
+            ).tolist()
+
+    return torch.tensor(ranges.lin_vel_x[1], device=env.device)
+
+
+def ang_vel_cmd_levels(
+    env: "ManagerBasedRLEnv",
+    env_ids,
+    reward_term_name: str = "track_ang_vel_z",
+) -> torch.Tensor:
+    """Yaw-rate command curriculum (mirror of :func:`lin_vel_cmd_levels`), grown
+    once yaw tracking clears 80% of its weight."""
+    command_term = env.command_manager.get_term("base_velocity")
+    ranges = command_term.cfg.ranges
+    limit_ranges = command_term.cfg.limit_ranges
+
+    reward_term = env.reward_manager.get_term_cfg(reward_term_name)
+    reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
+
+    if env.common_step_counter % env.max_episode_length == 0:
+        if reward > reward_term.weight * 0.8:
+            delta_command = torch.tensor([-0.1, 0.1], device=env.device)
+            ranges.ang_vel_z = torch.clamp(
+                torch.tensor(ranges.ang_vel_z, device=env.device) + delta_command,
+                limit_ranges.ang_vel_z[0],
+                limit_ranges.ang_vel_z[1],
+            ).tolist()
+
+    return torch.tensor(ranges.ang_vel_z[1], device=env.device)

@@ -650,6 +650,137 @@ Usage examples:
     mobile_cfg.spawn.articulation_props.fix_root_link = False
 """
 
+
+G1_29DOF_CLEAN_CFG = ArticulationCfg(
+    spawn=sim_utils.UsdFileCfg(
+        # Kept from IsaacLab's g1.usd (NOT unitree_rl_lab's g1_29dof_rev_1_0.usd):
+        # switching USD can change IsaacLab's joint sort order, which would break the
+        # LEG_DDS/UP_DDS mapping the MuJoCo deploy relies on.
+        usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/Unitree/G1/g1.usd",
+        activate_contact_sensors=True,
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            # unitree_rl_lab uses enabled_self_collisions=True. Kept False here: the
+            # IsaacLab g1.usd collision meshes are not validated for self-contact and
+            # can cause spawn-time explosions. Flip to True only after checking.
+            enabled_self_collisions=False,
+            fix_root_link=False,
+            solver_position_iteration_count=8,
+            solver_velocity_iteration_count=4,
+        ),
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.8),
+        # g1.usd is authored with a 90-deg yaw; keep this so "forward" (+x command)
+        # matches the robot's facing. Do NOT drop it for this USD.
+        rot=(0.7071, 0, 0, 0.7071),
+        # unitree_rl_lab UNITREE_G1_29DOF_CFG default pose — legs + a bent-arm ready
+        # pose. The soft upper-body PD (below) holds the arms here; they comply under
+        # gravity. Parked (no policy action) during legs-only, ready for loco-manip.
+        joint_pos={
+            "left_hip_pitch_joint": -0.1,
+            "right_hip_pitch_joint": -0.1,
+            ".*_knee_joint": 0.3,
+            ".*_ankle_pitch_joint": -0.2,
+            ".*_shoulder_pitch_joint": 0.3,
+            "left_shoulder_roll_joint": 0.25,
+            "right_shoulder_roll_joint": -0.25,
+            ".*_elbow_joint": 0.97,
+            "left_wrist_roll_joint": 0.15,
+            "right_wrist_roll_joint": -0.15,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    soft_joint_pos_limit_factor=0.9,
+    # Faithful port of unitree_rl_lab UNITREE_G1_29DOF_CFG actuators (the
+    # manufacturer's own gains). ImplicitActuator (PD + effort clamp) matches the
+    # MuJoCo software-PD deploy. Upper body is intentionally SOFT (KP 40) so it is
+    # compliant for the upcoming loco-manipulation stage, not held rigid.
+    actuators={
+        "N7520-14.3": ImplicitActuatorCfg(
+            joint_names_expr=[".*_hip_pitch_.*", ".*_hip_yaw_.*", "waist_yaw_joint"],
+            effort_limit_sim=88,
+            velocity_limit_sim=32.0,
+            stiffness={
+                ".*_hip_.*": 100.0,
+                "waist_yaw_joint": 200.0,
+            },
+            damping={
+                ".*_hip_.*": 2.0,
+                "waist_yaw_joint": 5.0,
+            },
+            armature=0.01,
+        ),
+        "N7520-22.5": ImplicitActuatorCfg(
+            joint_names_expr=[".*_hip_roll_.*", ".*_knee_.*"],
+            effort_limit_sim=139,
+            velocity_limit_sim=20.0,
+            stiffness={
+                ".*_hip_roll_.*": 100.0,
+                ".*_knee_.*": 150.0,
+            },
+            damping={
+                ".*_hip_roll_.*": 2.0,
+                ".*_knee_.*": 4.0,
+            },
+            armature=0.01,
+        ),
+        "N5020-16": ImplicitActuatorCfg(
+            joint_names_expr=[
+                ".*_shoulder_.*",
+                ".*_elbow_.*",
+                ".*_wrist_roll.*",
+                ".*_ankle_.*",
+                "waist_roll_joint",
+                "waist_pitch_joint",
+            ],
+            effort_limit_sim=25,
+            velocity_limit_sim=37,
+            stiffness=40.0,
+            damping={
+                ".*_shoulder_.*": 1.0,
+                ".*_elbow_.*": 1.0,
+                ".*_wrist_roll.*": 1.0,
+                ".*_ankle_.*": 2.0,
+                "waist_.*_joint": 5.0,
+            },
+            armature=0.01,
+        ),
+        "W4010-25": ImplicitActuatorCfg(
+            joint_names_expr=[".*_wrist_pitch.*", ".*_wrist_yaw.*"],
+            effort_limit_sim=5,
+            velocity_limit_sim=22,
+            stiffness=40.0,
+            damping=1.0,
+            armature=0.01,
+        ),
+    },
+    prim_path="/World/envs/env_.*/Robot",
+)
+"""G1 29-DOF — faithful port of unitree_rl_lab ``UNITREE_G1_29DOF_CFG``.
+
+Uses the manufacturer's own gains and default pose for ALL joints, including a
+SOFT (KP 40) upper body so the arms are already compliant for the coming
+loco-manipulation stage (legs-only for now: no action is sent to the upper body,
+but it is not held rigid). Deliberate deviations from unitree_rl_lab:
+
+* USD + 90-deg spawn yaw kept from IsaacLab's ``g1.usd`` (not unitree's USD),
+  to preserve IsaacLab's joint sort order and the MuJoCo LEG_DDS/UP_DDS mapping.
+* enabled_self_collisions=False (unitree uses True) — enable only after the
+  g1.usd collision meshes are validated for self-contact.
+
+The gains AND the default arm pose here MUST stay in sync with the deploy PD and
+DEFAULT_Q in ``unitree_mujoco/custom_policy/run_policy_mujoco.py``.
+"""
+
 """
 Configuration for the Unitree G1 Humanoid robot with Inspire 5fingers hand.
 The Unitree G1 URDF can be found here: https://github.com/unitreerobotics/unitree_ros/tree/master/robots/g1_description/g1_29dof_with_hand_rev_1_0.urdf

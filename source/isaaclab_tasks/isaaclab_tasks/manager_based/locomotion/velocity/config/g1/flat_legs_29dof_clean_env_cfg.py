@@ -295,9 +295,12 @@ class RewardsCfg:
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint"])},
     )
+    # -0.1 freed steering but let the feet toe-out (hip_yaw = leg external rotation).
+    # -0.5 keeps feet forward on straight walking; the strong track_ang_vel_z (1.0)
+    # still justifies hip_yaw use when a yaw command is present.
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-0.5,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"])},
     )
     flat_orientation = RewTerm(func=mdp.flat_orientation_l2, weight=-5.0)

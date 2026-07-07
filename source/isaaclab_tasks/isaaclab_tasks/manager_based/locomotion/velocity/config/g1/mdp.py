@@ -432,3 +432,26 @@ def stand_still_joint_vel_penalty(
     penalty = torch.sum(torch.abs(joint_vel), dim=1)
     cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
     return penalty * (cmd_norm < command_threshold)
+
+
+def joint_deviation_l1_when_straight(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """L1 joint deviation from the default pose, applied ONLY when NOT commanded to
+    turn (``|yaw command| < command_threshold``).
+
+    For hip_yaw on a legs-only walk this keeps the feet pointing FORWARD during
+    straight walking (kills the toe-in/out drift that curves the path) while leaving
+    the joint completely free to rotate when a yaw command IS present, so turning is
+    not blocked. The gate uses only the YAW command component (index 2 of the base
+    velocity command), not the full command norm, so a straight-line walk at nonzero
+    linear velocity is still penalised. Use with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    diff = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    penalty = torch.sum(torch.abs(diff), dim=1)
+    yaw_cmd = torch.abs(env.command_manager.get_command(command_name)[:, 2])
+    return penalty * (yaw_cmd < command_threshold)

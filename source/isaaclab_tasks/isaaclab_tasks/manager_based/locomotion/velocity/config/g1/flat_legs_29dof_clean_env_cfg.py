@@ -13,10 +13,13 @@ human-like walk — while keeping this project's deploy design.
 What makes the gait natural (ported from unitree_rl_lab, NOT in the IsaacLab
 base config):
 
-* ``gait`` (``feet_gait``): a **phase-based periodic gait reward**. A fixed clock
-  tells each foot when to be in stance vs swing (anti-phase, 0.8 s period). The
-  natural knee/hip motion emerges to satisfy the rhythm — instead of clamping
-  the knee angle directly (which caused the crouch↔locked-knee oscillation).
+* **Clock-free gait shaping** (``feet_air_time`` + ``air_time_variance``): reward
+  deliberate single-support steps and penalize L/R timing asymmetry. The natural
+  knee/hip motion emerges — instead of clamping the knee angle directly (which
+  caused the crouch↔locked-knee oscillation). Replaced the earlier phase-clock
+  ``feet_gait`` reward (commented out below): the always-ticking clock drove a
+  "parade" march while standing; air-time rewards need no clock, so ``stand_still``
+  can hold a clean stance when idle.
 * **Velocity-command curriculum**: commands start tiny (±0.1) and grow only as
   tracking improves, up to ``limit_ranges``. The robot masters slow clean
   walking first.
@@ -30,19 +33,18 @@ What is kept from this project's deploy design (differs from unitree_rl_lab):
   later). unitree_rl_lab drives all 29 joints.
 * **Asymmetric, deploy-safe actor-critic**: the actor (``policy`` group) reads
   only hardware-measurable quantities (IMU gyro, IMU tilt, command, the 12 leg
-  encoders, last action, the gait clock, and — arm-aware — the upper-body
-  encoders). The unmeasurable ``base_lin_vel`` is critic-only.
-* **No observation history.** Instead of unitree_rl_lab's history length 5, the
-  policy gets a **2-value sin/cos gait clock** (:func:`~.mdp.gait_phase`) so it
-  can phase-lock to the ``feet_gait`` reward. At deploy this is just a free-
-  running timer — no encoder history to buffer.
+  encoders, last action, and — arm-aware — the upper-body encoders). The
+  unmeasurable ``base_lin_vel`` is critic-only.
+* **No observation history and no gait clock.** unitree_rl_lab uses history
+  length 5; here the clock-free air-time gait reward means the policy needs
+  neither a history buffer nor the old 2-value ``gait_phase`` clock (removed).
 * IsaacLab ``G1_29DOF_CFG`` (matches the MuJoCo deploy asset / gains) on **flat
   ground**.
 
-Policy observation layout (81), in concat order — the MuJoCo deploy runner must
-rebuild this exactly:
+Policy observation layout (79), in concat order — the MuJoCo deploy runner must
+rebuild this exactly (gait_phase clock removed; was 81):
     base_ang_vel (3) | projected_gravity (3) | velocity_commands (3) |
-    gait_phase (2) | joint_pos legs (12) | joint_vel legs (12) |
+    joint_pos legs (12) | joint_vel legs (12) |
     last_action (12) | upper_body_joint_pos (17) | upper_body_joint_vel (17)
 
 Action: ``target_q_leg = raw_action * 0.25 + default_q_leg`` (scale 0.25).
@@ -203,9 +205,11 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        # 2-value sin/cos gait clock — lets the policy phase-lock to feet_gait
-        # without an observation history. Deploy = a free-running timer.
-        gait_phase = ObsTerm(func=custom_mdp.gait_phase, params={"period": GAIT_PERIOD})
+        # OLD: 2-value sin/cos gait clock (phase-lock for feet_gait). COMMENTED OUT with
+        # feet_gait — the air-time gait needs no clock. Removing it drops the policy obs
+        # from 81 -> 79 dims, so this is a FROM-SCRATCH retrain (no warm-start) and the
+        # MuJoCo runner obs must drop these 2 values too.
+        # gait_phase = ObsTerm(func=custom_mdp.gait_phase, params={"period": GAIT_PERIOD})
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
@@ -295,28 +299,54 @@ class RewardsCfg:
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint"])},
     )
-    # -0.1 freed steering but let the feet toe-out (hip_yaw = leg external rotation).
-    # -0.5 keeps feet forward on straight walking; the strong track_ang_vel_z (1.0)
-    # still justifies hip_yaw use when a yaw command is present.
+    # COMMAND-GATED: penalize hip_yaw deviation ONLY when NOT turning (|yaw cmd| < 0.1).
+    # An always-on -0.5 left a residual (asymmetric) toe-in that curved the walk; raising
+    # it would choke turning. Gating lets us push to -1.0 for straight feet on straight
+    # walking while leaving hip_yaw fully free when a yaw command is present.
     joint_deviation_hip_yaw = RewTerm(
-        func=mdp.joint_deviation_l1,
-        weight=-0.5,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"])},
+        func=custom_mdp.joint_deviation_l1_when_straight,
+        weight=-1.0,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"]),
+        },
     )
     flat_orientation = RewTerm(func=mdp.flat_orientation_l2, weight=-5.0)
     base_height = RewTerm(func=mdp.base_height_l2, weight=-10.0, params={"target_height": 0.78})
 
     # -- feet / gait (the natural-walk drivers)
-    gait = RewTerm(
-        func=custom_mdp.feet_gait,
-        weight=0.5,
+    # ------------------------------------------------------------------------------
+    # OLD: phase-clock gait reward. COMMENTED OUT (kept for reference / easy revert).
+    # The always-ticking clock it scored against drove the standing "parade"; replaced
+    # by the CLOCK-FREE air-time rewards below so stand_still can hold a clean stance.
+    # gait = RewTerm(
+    #     func=custom_mdp.feet_gait,
+    #     weight=0.5,
+    #     params={
+    #         "period": GAIT_PERIOD,
+    #         "offset": [0.0, 0.5],  # anti-phase (alternating steps)
+    #         "threshold": 0.55,  # stance duty
+    #         "command_name": "base_velocity",
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #     },
+    # )
+    # NEW clock-free gait (proven on this robot in flat_legs_29dof_env_cfg.py):
+    #   feet_air_time  -> reward deliberate single-support steps (no clock needed)
+    #   air_time_variance -> penalize L/R timing asymmetry (helps straight-line walk)
+    # Both are command-gated / zero at standing, so nothing drives a march when idle.
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_positive_biped,
+        weight=1.0,
         params={
-            "period": GAIT_PERIOD,
-            "offset": [0.0, 0.5],  # anti-phase (alternating steps)
-            "threshold": 0.55,  # stance duty
             "command_name": "base_velocity",
+            "threshold": 0.4,  # target single-support air time per step
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
+    )
+    air_time_variance = RewTerm(
+        func=custom_mdp.air_time_variance_penalty,
+        weight=-1.0,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     feet_slide = RewTerm(
         func=mdp.feet_slide,

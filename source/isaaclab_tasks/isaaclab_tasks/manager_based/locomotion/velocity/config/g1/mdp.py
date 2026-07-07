@@ -409,3 +409,26 @@ def stand_still_penalty(
     penalty = torch.sum(torch.abs(diff), dim=1)
     cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
     return penalty * (cmd_norm < command_threshold)
+
+
+def stand_still_joint_vel_penalty(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """L1 penalty on leg-joint VELOCITY while the robot is commanded to stand still.
+
+    Companion to :func:`stand_still_penalty` (which penalises POSITION deviation).
+    A "march in place" cycles the legs back through the default between steps, so the
+    position error is near-zero except at the mid-step extremes — a weak signal. The
+    marching MOTION, however, shows up directly as joint velocity, so this term gives
+    a much sharper gradient toward truly standing still. Gated at the same threshold
+    as ``feet_gait``; self-extinguishes (→0) once the robot actually holds still. Use
+    with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    penalty = torch.sum(torch.abs(joint_vel), dim=1)
+    cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+    return penalty * (cmd_norm < command_threshold)

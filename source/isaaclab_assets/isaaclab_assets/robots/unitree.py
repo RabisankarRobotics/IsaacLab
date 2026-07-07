@@ -734,13 +734,13 @@ G1_29DOF_CLEAN_CFG = ArticulationCfg(
             armature=0.01,
         ),
         "N5020-16": ImplicitActuatorCfg(
+            # Arms + ankles: SOFT (KP40), unchanged — the arms are compliant for the
+            # coming loco-manip stage and there is no problem with them.
             joint_names_expr=[
                 ".*_shoulder_.*",
                 ".*_elbow_.*",
                 ".*_wrist_roll.*",
                 ".*_ankle_.*",
-                "waist_roll_joint",
-                "waist_pitch_joint",
             ],
             effort_limit_sim=25,
             velocity_limit_sim=37,
@@ -750,8 +750,19 @@ G1_29DOF_CLEAN_CFG = ArticulationCfg(
                 ".*_elbow_.*": 1.0,
                 ".*_wrist_roll.*": 1.0,
                 ".*_ankle_.*": 2.0,
-                "waist_.*_joint": 5.0,
             },
+            armature=0.01,
+        ),
+        "N5020-16-waist": ImplicitActuatorCfg(
+            # waist_roll / waist_pitch are the same N5020 motor (effort 25) but
+            # STIFFENED to KP200. Legs-only means no policy action reaches the waist,
+            # so at KP40 the torso gets swayed by leg reaction and the upper body
+            # deviates while walking. Stiff holds the torso rigid. (Arms stay soft.)
+            joint_names_expr=["waist_roll_joint", "waist_pitch_joint"],
+            effort_limit_sim=25,
+            velocity_limit_sim=37,
+            stiffness=200.0,
+            damping=5.0,
             armature=0.01,
         ),
         "W4010-25": ImplicitActuatorCfg(

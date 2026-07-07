@@ -165,7 +165,7 @@ class CommandsCfg:
     base_velocity = UniformLevelVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
-        rel_standing_envs=0.1,
+        rel_standing_envs=0.2,  # was 0.1 — more standing practice to kill the parade march
         rel_heading_envs=1.0,
         heading_command=False,
         debug_vis=False,
@@ -342,6 +342,16 @@ class RewardsCfg:
     stand_still = RewTerm(
         func=custom_mdp.stand_still_penalty,
         weight=-0.5,
+        params={
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
+        },
+    )
+    # Velocity companion: kills the marching MOTION directly (position penalty above
+    # only sees the mid-step extremes). Self-extinguishes once the robot holds still.
+    stand_still_vel = RewTerm(
+        func=custom_mdp.stand_still_joint_vel_penalty,
+        weight=-0.1,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),

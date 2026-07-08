@@ -181,7 +181,7 @@ class CommandsCfg:
         ),
         # Caps the curriculum. Forward-biased, modest strafe/yaw for a clean walk.
         limit_ranges=UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.5, 0.5)
+            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-0.5, 0.5)
         ),
     )
 
@@ -308,14 +308,21 @@ class RewardsCfg:
     # An always-on -0.5 left a residual (asymmetric) toe-in that curved the walk; raising
     # it would choke turning. Gating lets us push to -1.0 for straight feet on straight
     # walking while leaving hip_yaw fully free when a yaw command is present.
+    # joint_deviation_hip_yaw = RewTerm(
+    #     func=custom_mdp.joint_deviation_l1_when_straight,
+    #     weight=-1.0,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"]),
+    #     },
+    # )
+
     joint_deviation_hip_yaw = RewTerm(
-        func=custom_mdp.joint_deviation_l1_when_straight,
-        weight=-1.0,
-        params={
-            "command_name": "base_velocity",
-            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"]),
-        },
+        func=mdp.joint_deviation_l1,
+        weight=-0.5,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"])},
     )
+
     flat_orientation = RewTerm(func=mdp.flat_orientation_l2, weight=-5.0)
     base_height = RewTerm(func=mdp.base_height_l2, weight=-10.0, params={"target_height": 0.78})
 
@@ -537,7 +544,7 @@ class G1FlatLegs29DofCleanEnvCfg_PLAY(G1FlatLegs29DofCleanEnvCfg):
         self.scene.env_spacing = 2.5
         # clean demo: no observation noise, no pushes
         self.observations.policy.enable_corruption = False
-        self.events.push_robot = None
+        # self.events.push_robot = None
         # play at the fully-grown command range (skip the curriculum ramp)
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.curriculum.lin_vel_cmd_levels = None

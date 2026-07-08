@@ -13,13 +13,16 @@ human-like walk — while keeping this project's deploy design.
 What makes the gait natural (ported from unitree_rl_lab, NOT in the IsaacLab
 base config):
 
-* **Clock-free gait shaping** (``feet_air_time`` + ``air_time_variance``): reward
-  deliberate single-support steps and penalize L/R timing asymmetry. The natural
-  knee/hip motion emerges — instead of clamping the knee angle directly (which
-  caused the crouch↔locked-knee oscillation). Replaced the earlier phase-clock
-  ``feet_gait`` reward (commented out below): the always-ticking clock drove a
-  "parade" march while standing; air-time rewards need no clock, so ``stand_still``
-  can hold a clean stance when idle.
+* **Phase-clock gait shaping** (``feet_gait`` reward + ``gait_phase`` obs): a
+  periodic clock defines when each foot should be in stance vs swing (anti-phase),
+  and the reward scores actual contact against it. The natural knee/hip motion
+  emerges — instead of clamping the knee angle directly (which caused the
+  crouch↔locked-knee oscillation). The clock is **frozen at idle** (advances only
+  while a base command is present, ``custom_mdp._gait_phase_scalar``): at standstill
+  the ``gait_phase`` obs is constant, so it no longer drives a "parade" march and
+  ``stand_still`` can hold a clean stance. (v5: the clock-free ``feet_air_time`` +
+  ``air_time_variance`` variant is commented out below — it walked on the custom
+  robot but never taught this legs-only G1 to walk from scratch.)
 * **Velocity-command curriculum**: commands start tiny (±0.1) and grow only as
   tracking improves, up to ``limit_ranges``. The robot masters slow clean
   walking first.
@@ -35,15 +38,16 @@ What is kept from this project's deploy design (differs from unitree_rl_lab):
   only hardware-measurable quantities (IMU gyro, IMU tilt, command, the 12 leg
   encoders, last action, and — arm-aware — the upper-body encoders). The
   unmeasurable ``base_lin_vel`` is critic-only.
-* **No observation history and no gait clock.** unitree_rl_lab uses history
-  length 5; here the clock-free air-time gait reward means the policy needs
-  neither a history buffer nor the old 2-value ``gait_phase`` clock (removed).
+* **No observation history** (unitree_rl_lab uses history length 5). Instead of a
+  history buffer, the policy phase-locks to the 2-value ``gait_phase`` clock —
+  deploy-safe (a free-running, command-gated step counter, no encoder history).
 * IsaacLab ``G1_29DOF_CFG`` (matches the MuJoCo deploy asset / gains) on **flat
   ground**.
 
-Policy observation layout (79), in concat order — the MuJoCo deploy runner must
-rebuild this exactly (gait_phase clock removed; was 81):
+Policy observation layout (81), in concat order — the MuJoCo deploy runner must
+rebuild this exactly (gait_phase clock restored; frozen at idle):
     base_ang_vel (3) | projected_gravity (3) | velocity_commands (3) |
+    gait_phase (2) |
     joint_pos legs (12) | joint_vel legs (12) |
     last_action (12) | upper_body_joint_pos (17) | upper_body_joint_vel (17)
 
@@ -205,11 +209,12 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        # OLD: 2-value sin/cos gait clock (phase-lock for feet_gait). COMMENTED OUT with
-        # feet_gait — the air-time gait needs no clock. Removing it drops the policy obs
-        # from 81 -> 79 dims, so this is a FROM-SCRATCH retrain (no warm-start) and the
-        # MuJoCo runner obs must drop these 2 values too.
-        # gait_phase = ObsTerm(func=custom_mdp.gait_phase, params={"period": GAIT_PERIOD})
+        # 2-value sin/cos gait clock (phase-lock reference for feet_gait). RESTORED
+        # (v5) with feet_gait. FROZEN AT IDLE (custom_mdp._gait_phase_scalar): constant
+        # while standing, so it no longer drives the "parade" march. Re-adding it takes
+        # the policy obs 79 -> 81 dims, so this is a FROM-SCRATCH retrain (no warm-start)
+        # and the MuJoCo runner obs must re-add these 2 values (mirroring the frozen clock).
+        gait_phase = ObsTerm(func=custom_mdp.gait_phase, params={"period": GAIT_PERIOD})
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
@@ -316,38 +321,43 @@ class RewardsCfg:
 
     # -- feet / gait (the natural-walk drivers)
     # ------------------------------------------------------------------------------
-    # OLD: phase-clock gait reward. COMMENTED OUT (kept for reference / easy revert).
-    # The always-ticking clock it scored against drove the standing "parade"; replaced
-    # by the CLOCK-FREE air-time rewards below so stand_still can hold a clean stance.
-    # gait = RewTerm(
-    #     func=custom_mdp.feet_gait,
-    #     weight=0.5,
-    #     params={
-    #         "period": GAIT_PERIOD,
-    #         "offset": [0.0, 0.5],  # anti-phase (alternating steps)
-    #         "threshold": 0.55,  # stance duty
-    #         "command_name": "base_velocity",
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-    #     },
-    # )
-    # NEW clock-free gait (proven on this robot in flat_legs_29dof_env_cfg.py):
-    #   feet_air_time  -> reward deliberate single-support steps (no clock needed)
-    #   air_time_variance -> penalize L/R timing asymmetry (helps straight-line walk)
-    # Both are command-gated / zero at standing, so nothing drives a march when idle.
-    feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
-        weight=1.0,
+    # Phase-clock gait reward — the proven driver that taught THIS robot to walk.
+    # RESTORED (v5) after the clock-free air-time experiment failed from scratch
+    # (robot only shuffled tiny backward steps, never learned a forward gait). The
+    # clock is now FROZEN AT IDLE (custom_mdp._gait_phase_scalar): it advances only
+    # while a base command is present, so the gait_phase obs is CONSTANT at standstill
+    # and no longer drives the "parade" march — the whole reason it was removed. The
+    # reward is also command-gated, so it is silent when idle. The gait_phase obs is
+    # re-enabled below (obs back to 81) and the MuJoCo runner mirrors the frozen clock.
+    gait = RewTerm(
+        func=custom_mdp.feet_gait,
+        weight=0.5,
         params={
+            "period": GAIT_PERIOD,
+            "offset": [0.0, 0.5],  # anti-phase (alternating steps)
+            "threshold": 0.55,  # stance duty
             "command_name": "base_velocity",
-            "threshold": 0.4,  # target single-support air time per step
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
-    air_time_variance = RewTerm(
-        func=custom_mdp.air_time_variance_penalty,
-        weight=-1.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
-    )
+    # OLD clock-free gait (feet_air_time + air_time_variance). COMMENTED OUT (v5):
+    # proven on the custom robot but did NOT teach this legs-only G1 to walk from
+    # scratch — feet_air_time read ~0.009 (clean single-support rarely achieved) and
+    # the policy collapsed to a degenerate tiny-backward-step optimum. Kept for revert.
+    # feet_air_time = RewTerm(
+    #     func=mdp.feet_air_time_positive_biped,
+    #     weight=1.0,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "threshold": 0.4,  # target single-support air time per step
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #     },
+    # )
+    # air_time_variance = RewTerm(
+    #     func=custom_mdp.air_time_variance_penalty,
+    #     weight=-1.0,
+    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
+    # )
     feet_slide = RewTerm(
         func=mdp.feet_slide,
         weight=-0.2,

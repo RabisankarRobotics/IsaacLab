@@ -238,6 +238,37 @@ def energy(
     return torch.sum(torch.abs(qvel) * torch.abs(qfrc), dim=-1)
 
 
+def _gait_phase_scalar(
+    env: "ManagerBasedRLEnv",
+    period: float,
+    command_name: str = "base_velocity",
+    cmd_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Command-gated gait phase in ``[0, 1)`` — the FROZEN-AT-IDLE clock.
+
+    A per-env integer step counter that advances ONLY while a base command is
+    present (``||cmd|| > cmd_threshold``) and HOLDS while the robot is idle. The
+    phase is ``(count * step_dt) % period / period``. Freezing at standstill is
+    what kills the "parade" march: the :func:`gait_phase` observation stops
+    cycling when idle, so the policy has nothing driving it to step in place.
+
+    Advanced exactly ONCE per env step, keyed on ``common_step_counter`` (which
+    bumps once per ``env.step``). Both :func:`feet_gait` (reward, computed first)
+    and :func:`gait_phase` (observation, computed later in the same step) call
+    this, so the reward clock and the observed clock are guaranteed identical.
+    NOT reset per episode — a continuous accumulator that mirrors the deploy
+    runner's single, never-resetting ``step_count`` exactly.
+    """
+    if not hasattr(env, "_gait_count"):
+        env._gait_count = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+        env._gait_last_step = -1
+    if env.common_step_counter != env._gait_last_step:
+        env._gait_last_step = env.common_step_counter
+        cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+        env._gait_count = env._gait_count + (cmd_norm > cmd_threshold).long()
+    return (env._gait_count.float() * env.step_dt) % period / period
+
+
 def feet_gait(
     env: "ManagerBasedRLEnv",
     period: float,
@@ -248,7 +279,8 @@ def feet_gait(
 ) -> torch.Tensor:
     """Phase-based periodic gait reward — the core of the natural walk.
 
-    A fixed clock of length ``period`` seconds defines, per foot, when it SHOULD
+    A clock of length ``period`` seconds (frozen while idle, see
+    :func:`_gait_phase_scalar`) defines, per foot, when it SHOULD
     be in stance vs swing. ``offset`` gives each foot's phase shift; ``[0.0,
     0.5]`` puts the two feet in anti-phase (alternating steps). ``threshold`` is
     the stance duty (fraction of the cycle a foot should be planted). Each
@@ -268,7 +300,7 @@ def feet_gait(
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     is_contact = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids] > 0
 
-    global_phase = ((env.episode_length_buf * env.step_dt) % period / period).unsqueeze(1)
+    global_phase = _gait_phase_scalar(env, period).unsqueeze(1)  # frozen-at-idle clock
     phases = []
     for offset_ in offset:
         phase = (global_phase + offset_) % 1.0
@@ -290,15 +322,15 @@ def gait_phase(env: "ManagerBasedRLEnv", period: float) -> torch.Tensor:
     """2-value (sin, cos) clock of the gait phase — the deploy-safe replacement
     for an observation history.
 
-    Exposes the SAME phase clock :func:`feet_gait` scores against, so the policy
-    can time its steps without a history buffer. At deploy this is just a
-    free-running timer: ``phase = (t / period) % 1``, then ``[sin, cos]`` of
+    Exposes the SAME frozen-at-idle phase clock :func:`feet_gait` scores against
+    (:func:`_gait_phase_scalar`), so the policy can time its steps without a
+    history buffer. The clock only advances while a base command is present, so
+    at standstill this observation is CONSTANT — nothing drives an idle march.
+    At deploy this is a command-gated step counter: ``phase = (count * dt) %
+    period / period`` (count bumped only while moving), then ``[sin, cos]`` of
     ``2*pi*phase`` — no encoder history required.
     """
-    if not hasattr(env, "episode_length_buf"):
-        env.episode_length_buf = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
-
-    global_phase = (env.episode_length_buf * env.step_dt) % period / period
+    global_phase = _gait_phase_scalar(env, period)
     phase = torch.zeros(env.num_envs, 2, device=env.device)
     phase[:, 0] = torch.sin(global_phase * torch.pi * 2.0)
     phase[:, 1] = torch.cos(global_phase * torch.pi * 2.0)

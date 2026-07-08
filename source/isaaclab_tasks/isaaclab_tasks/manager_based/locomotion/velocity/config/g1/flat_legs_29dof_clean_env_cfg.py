@@ -347,10 +347,9 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
-    # OLD clock-free gait (feet_air_time + air_time_variance). COMMENTED OUT (v5):
-    # proven on the custom robot but did NOT teach this legs-only G1 to walk from
-    # scratch — feet_air_time read ~0.009 (clean single-support rarely achieved) and
-    # the policy collapsed to a degenerate tiny-backward-step optimum. Kept for revert.
+    # feet_air_time (clock-free single-support reward) stays COMMENTED OUT (v5): it
+    # never taught this legs-only G1 to walk from scratch (read ~0.009, degenerate
+    # backward shuffle). The feet_gait clock above drives the gait instead.
     # feet_air_time = RewTerm(
     #     func=mdp.feet_air_time_positive_biped,
     #     weight=1.0,
@@ -360,11 +359,15 @@ class RewardsCfg:
     #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
     #     },
     # )
-    # air_time_variance = RewTerm(
-    #     func=custom_mdp.air_time_variance_penalty,
-    #     weight=-1.0,
-    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
-    # )
+    # air_time_variance -> L/R SYMMETRY nudge (v6): penalizes variance of air/contact
+    # time across the two feet, so one leg can't stay "more active" than the other
+    # (fixes the left-leg-dominant asymmetry). Independent of the gait clock (it shapes
+    # step DURATION symmetry, the clock shapes PHASE). Reward-only -> warm-start OK.
+    air_time_variance = RewTerm(
+        func=custom_mdp.air_time_variance_penalty,
+        weight=-1.0,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
+    )
     feet_slide = RewTerm(
         func=mdp.feet_slide,
         weight=-0.2,
@@ -379,7 +382,7 @@ class RewardsCfg:
         params={
             "std": 0.05,
             "tanh_mult": 2.0,
-            "target_height": 0.13,  # was 0.10 — lift the swing foot higher (more knee flex)
+            "target_height": 0.16,  # 0.10 -> 0.13 -> 0.16: lift the swing foot higher = more knee flex
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
         },
     )

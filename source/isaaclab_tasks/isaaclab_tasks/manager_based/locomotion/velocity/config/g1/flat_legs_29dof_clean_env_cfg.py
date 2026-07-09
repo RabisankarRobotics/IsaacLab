@@ -403,11 +403,12 @@ class RewardsCfg:
     # i, so the STANCE knee is never pushed to bend and stays free to extend/bear load.
     swing_knee_flexion = RewTerm(
         func=custom_mdp.swing_knee_flexion_reward,
-        weight=0.75,  # strong pull: warm-starting from a circumducting policy, the knee
-        # reward must out-pull that local optimum. Raise toward 1.0 if hip roll persists;
-        # lower toward 0.3 if the knee over-flexes into a goose-step.
+        weight=0.6,  # 0.75 -> 0.6: modest trim. The MAIN parade fix is `scale` below.
         params={
-            "scale": 0.8,
+            "scale": 0.5,  # 0.8 -> 0.5: SATURATE the reward at a MODERATE bend (~0.7 rad)
+            # so the knee has no reason to OVER-flex into a high-stepping parade, while the
+            # strong reward for a moderate bend still keeps circumduction away. Drop toward
+            # 0.4 for even less lift; raise back toward 0.8 if the "rounded step" returns.
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
                 body_names=["left_ankle_roll_link", "right_ankle_roll_link"],

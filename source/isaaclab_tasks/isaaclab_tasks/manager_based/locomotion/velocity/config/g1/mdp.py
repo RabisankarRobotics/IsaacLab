@@ -132,6 +132,45 @@ def knee_bent_stance_penalty(
     return torch.sum(excess * in_contact.float(), dim=1)
 
 
+def swing_knee_flexion_reward(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    scale: float = 0.8,
+) -> torch.Tensor:
+    """Reward the SWING knee (its foot is airborne) for flexing — the clean way to
+    clear the swing foot, instead of hip-roll circumduction (the "rounded step").
+
+    The ``feet_clearance`` reward only asks for foot HEIGHT, which the policy can
+    satisfy either by flexing the knee (clean) OR by rolling/abducting the hip so
+    a straight leg swings up in an arc (circumduction). This term gives the knee an
+    explicit reason to bend during swing, so height comes from the knee, not the hip.
+
+    Mirror of :func:`knee_bent_stance_penalty`: the STANCE knee is pulled toward
+    extension (tall support), the SWING knee toward flexion (foot clearance). The
+    reward is a SATURATING ``tanh(flex / scale)`` so it wants "clearly bent" but
+    never a fixed target angle — this avoids the crouch↔locked-knee oscillation that
+    a hard knee-angle target produced. The stance knee is never rewarded here, so
+    it stays free to extend and bear load.
+
+    ``sensor_cfg`` (feet) and ``asset_cfg`` (knees) MUST be built with matching
+    left-then-right order and ``preserve_order=True`` so foot *i* gates knee *i*.
+    The G1 knee flexes in the +q direction (default ≈0.3 rad), so ``clamp(knee, 0)``
+    is the flexion amount. Use with a POSITIVE weight.
+
+    Returns ``sum_legs( swing_leg * tanh(max(0, knee_leg) / scale) )``.
+    """
+    from isaaclab.sensors import ContactSensor
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    # current_contact_time <= 0 means the foot is airborne (swing).
+    in_swing = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids] <= 0.0  # (N, L)
+    knee = asset.data.joint_pos[:, asset_cfg.joint_ids]  # (N, L)
+    flex = torch.clamp(knee, min=0.0)  # G1 knee flexes positive
+    return torch.sum(torch.tanh(flex / scale) * in_swing.float(), dim=1)
+
+
 def stand_still_joint_deviation_l1(
     env: "ManagerBasedRLEnv",
     command_name: str,

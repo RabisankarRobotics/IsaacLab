@@ -301,7 +301,13 @@ class RewardsCfg:
     # penalized so the policy can actually use it to steer (fixes yaw tracking).
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1.0,
+        weight=-1.0,  # kept at -1.0 (NOT raised): hip_roll is essential for SIDEWAYS
+        # walking, so a heavier blanket penalty would choke strafing. Circumduction (the
+        # "rounded step") is instead out-competed CONSTRUCTIVELY by swing_knee_flexion
+        # below — flexing the knee earns the same clearance PLUS the knee reward, so the
+        # knee becomes the strictly-more-rewarding way to lift the swing foot. If
+        # circumduction still lingers, escalate with a COMMAND-GATED hip_roll penalty
+        # (active only when |vy|<0.1) rather than raising this weight.
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint"])},
     )
     # COMMAND-GATED: penalize hip_yaw deviation ONLY when NOT turning (|yaw cmd| < 0.1).
@@ -382,8 +388,36 @@ class RewardsCfg:
         params={
             "std": 0.05,
             "tanh_mult": 2.0,
-            "target_height": 0.16,  # 0.10 -> 0.13 -> 0.16: lift the swing foot higher = more knee flex
+            "target_height": 0.13,  # 0.10 -> 0.13 -> 0.16 -> 0.13: the 0.16 bump just fed
+            # circumduction (more lift via hip roll). Reverted; swing_knee_flexion now
+            # drives the lift via the knee, so a moderate height demand is enough.
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+        },
+    )
+
+    # -- knee: force the swing-foot lift to come from the KNEE, not hip circumduction.
+    # feet_clearance only asks for foot HEIGHT, which the policy was gaming by rolling
+    # the hip out (the "rounded step"). This rewards the airborne (swing) knee for
+    # flexing — saturating so it wants "clearly bent" but never a locked target angle
+    # (which previously caused the crouch<->locked-knee oscillation). Foot i gates knee
+    # i, so the STANCE knee is never pushed to bend and stays free to extend/bear load.
+    swing_knee_flexion = RewTerm(
+        func=custom_mdp.swing_knee_flexion_reward,
+        weight=0.75,  # strong pull: warm-starting from a circumducting policy, the knee
+        # reward must out-pull that local optimum. Raise toward 1.0 if hip roll persists;
+        # lower toward 0.3 if the knee over-flexes into a goose-step.
+        params={
+            "scale": 0.8,
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["left_ankle_roll_link", "right_ankle_roll_link"],
+                preserve_order=True,
+            ),
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["left_knee_joint", "right_knee_joint"],
+                preserve_order=True,
+            ),
         },
     )
 

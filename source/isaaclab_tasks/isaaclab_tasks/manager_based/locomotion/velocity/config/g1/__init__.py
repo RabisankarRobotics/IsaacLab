@@ -101,3 +101,18 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatLegs29DofCleanPPORunnerCfg",
     },
 )
+
+
+# Same clean env as above, but trained WITH left-right symmetry augmentation to fix the
+# random one-sided-turn / one-sided-strafe handedness. Warm-startable from the clean run
+# (only the algorithm differs); the exported policy is deploy-identical (Play task and the
+# deploy manifest are unchanged — reuse the -Clean-Play-v0 task to visualize it).
+gym.register(
+    id="Isaac-Velocity-Flat-Legs-G1-29Dof-Clean-Sym-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.flat_legs_29dof_clean_env_cfg:G1FlatLegs29DofCleanEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatLegs29DofCleanSymmetryPPORunnerCfg",
+    },
+)

@@ -5,7 +5,14 @@
 
 from isaaclab.utils import configclass
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoActorCriticCfg,
+    RslRlPpoAlgorithmCfg,
+    RslRlSymmetryCfg,
+)
+
+from ..symmetry import compute_symmetric_states
 
 
 @configclass
@@ -85,3 +92,29 @@ class G1FlatLegs29DofCleanPPORunnerCfg(G1FlatLegs29DofPPORunnerCfg):
         # walk, which converges fast. A clean gait usually appears well before
         # 4k iters; stop at the reward/episode-length plateau.
         self.max_iterations = 4000
+
+
+@configclass
+class G1FlatLegs29DofCleanSymmetryPPORunnerCfg(G1FlatLegs29DofCleanPPORunnerCfg):
+    """Clean legs-only walk WITH left-right symmetry augmentation.
+
+    Identical env/reward/obs/action and network to the sibling — the ONLY change is
+    that every PPO minibatch is augmented with its left-right mirror (2x), forcing the
+    actor to be left-right symmetric. This cures the random "handedness" symmetry-break
+    (turns/strafes one way but not the other; the working side flipping between runs)
+    that no reward tweak could fix, and it evens out the "one leg more active" step
+    asymmetry. Since only the algorithm changes, this WARM-STARTS from a clean-task
+    checkpoint (``--resume``) and the exported policy is byte-for-byte deploy-identical
+    (same 81-dim obs, same manifest). The mirror map is validated in ``symmetry.py``.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # Same experiment_name as the sibling so `--resume` warm-starts from the
+        # existing clean run; distinguish sym vs non-sym runs by timestamp.
+        self.algorithm.symmetry_cfg = RslRlSymmetryCfg(
+            use_data_augmentation=True,
+            use_mirror_loss=False,
+            data_augmentation_func=compute_symmetric_states,
+        )

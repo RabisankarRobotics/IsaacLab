@@ -395,6 +395,50 @@ class RewardsCfg:
         },
     )
 
+    # -- feet must not converge on each other (the SIDEWAYS-WALK FALL fix).
+    # Nothing else in this recipe knows the two feet exist in the same space:
+    #   * `undesired_contacts` excludes the ankles ("(?!.*ankle.*).*"), and
+    #   * G1_29DOF_CLEAN_CFG sets enabled_self_collisions=False, so PhysX does not even
+    #     GENERATE a foot-foot contact — the feet silently interpenetrate in Isaac.
+    # So during a strafe the policy learned to drag the trailing foot in on top of the
+    # stance foot for free; the fall comes from both feet loading the same patch of
+    # ground (the support polygon collapses), not from a contact force. In MuJoCo and on
+    # hardware the feet DO collide, so this is a sim-to-real hazard, not just a sim bug.
+    #
+    # A one-sided distance hinge is the right tool (not a contact penalty): it gives a
+    # gradient over the whole APPROACH, whereas a contact term is flat until the feet are
+    # already touching — by which point it is too late to recover.
+    #
+    # Geometry (from g1_29dof.xml): the foot centers sit at y = +/-0.1185 m with hip_roll=0
+    # (0.064452 + 0.052 + 0.0021489 - 9.4e-05), so the DEFAULT stance is 0.237 m apart
+    # (flat_legs_29dof_env_cfg.py independently measured ~0.236 m), and the sole collision
+    # spheres (+/-0.03 +/- 0.005 radius) touch at ~0.07 m.
+    #
+    # THRESHOLD AND WEIGHT ARE SEPARATE KNOBS — do not tighten min_distance to get bite:
+    #   * min_distance must stay near HALF the natural stance. The sibling G1 task uses
+    #     0.12 ("~half, so it only catches scissoring, not normal swing"); hv1_2 uses
+    #     0.18 on a 0.34 m stance (53%) AFTER a tighter value got GAMED — the policy toed
+    #     out, because a yawed foot reads wider laterally than one under a vertical leg.
+    #     0.14 here is 59% of natural: dormant during a normal forward walk (hip_roll ~ 0
+    #     holds the feet at 0.237) and during a *correct* 0.5 m/s strafe (separation
+    #     oscillates 0.237 <-> ~0.44), so it only bites on the shuffle that causes the fall.
+    #     It keeps 0.07 m of margin over hard contact — headroom for the 0.17 m-long foot
+    #     and any toe-in, which an ankle-origin measure cannot see.
+    #   * weight carries the authority. The sibling's -2.0 at min 0.12 makes a FULL foot
+    #     touch cost only -0.10/s — noise next to feet_clearance (+0.95). Hence -10.0.
+    # Mirror-safe (|dy| is invariant under the left-right mirror in symmetry.py).
+    feet_lateral_distance = RewTerm(
+        func=custom_mdp.feet_lateral_distance_clearance,
+        weight=-10.0,  # violation is in METERS. At min 0.14: 0.12 m sep -> -0.2/s (nudge),
+        # 0.07 m (touching) -> -0.7/s (on par with the largest positive terms), 0 m (crossed)
+        # -> a -1.4/s wall. Raise toward -20 if the feet still converge; drop toward -5 if
+        # the strafe turns timid. Prefer moving the WEIGHT, not min_distance.
+        params={
+            "min_distance": 0.14,
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+        },
+    )
+
     # -- knee: force the swing-foot lift to come from the KNEE, not hip circumduction.
     # feet_clearance only asks for foot HEIGHT, which the policy was gaming by rolling
     # the hip out (the "rounded step"). This rewards the airborne (swing) knee for

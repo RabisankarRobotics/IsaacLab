@@ -2,15 +2,15 @@
 <robot
   name="tahiti_c1">
 
-  <!--<mujoco>
-    <compiler meshdir="meshes" discardvisual="false" />
+  <mujoco>
+    <!-- meshdir="." because URDF <mesh filename="meshes/…"> already includes
+         the meshes/ prefix; MuJoCo would otherwise double-prefix. -->
+    <compiler meshdir="." discardvisual="false"/>
   </mujoco>
 
-   <link name="world"></link>
-  <joint name="floating_base_joint" type="floating">
-    <parent link="world"/>
-    <child link="base_link"/>
-  </joint>-->
+  <!-- MuJoCo will auto-add a freejoint on base_link when compiling the URDF.
+       Keeping the "world" link + floating_base_joint commented out avoids a
+       double-root; Isaac uses base_link as the articulation root via USD. -->
 
   <link
     name="base_link">

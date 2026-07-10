@@ -206,8 +206,8 @@ class TahitiC1VelocityRewardsCfg:
     )
 
     # ---- effort / smoothness ------------------------------------------
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.0e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
 
     # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
@@ -236,7 +236,7 @@ class TahitiC1VelocityRewardsCfg:
     # during turn commands so it doesn't fight yaw tracking.
     hip_yaw_lr_symmetry = RewTerm(
         func=custom_mdp.hip_yaw_symmetry_l1,
-        weight=-0.5,
+        weight=-1.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -252,7 +252,7 @@ class TahitiC1VelocityRewardsCfg:
     )
     joint_deviation_ankle_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.3,
+        weight=-0.5,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_ankle_roll_joint$"])},
     )
 
@@ -263,7 +263,7 @@ class TahitiC1VelocityRewardsCfg:
     # micro-cycling the feet.
     stand_still_no_cmd = RewTerm(
         func=custom_mdp.stand_still_joint_deviation_l1,
-        weight=-2.0,
+        weight=-3.0,
         params={
             "command_name": "base_velocity",
             "command_threshold": 0.1,
@@ -276,7 +276,7 @@ class TahitiC1VelocityRewardsCfg:
     # Kill the standing sway directly — L2 on base_ang_vel gated to standstill.
     stand_still_base_ang_vel = RewTerm(
         func=custom_mdp.stand_still_base_ang_vel_l2,
-        weight=-2.0,
+        weight=-3.0,
         params={
             "command_name": "base_velocity",
             "command_threshold": 0.1,

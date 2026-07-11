@@ -208,10 +208,11 @@ class TahitiC1VelocityRewardsCfg:
     # ---- effort / smoothness ------------------------------------------
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-2.0e-6)
 
     # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-50.0)
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-1.0,
@@ -228,23 +229,23 @@ class TahitiC1VelocityRewardsCfg:
     # (-0.1) so it can't fight the symmetry / turning terms.
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-0.5,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
     # Symmetry-only hip_yaw penalty — zero when left/right mirror, non-zero
     # when both drift the same way (the "walks in a circle" symptom). Softened
     # during turn commands so it doesn't fight yaw tracking.
-    hip_yaw_lr_symmetry = RewTerm(
-        func=custom_mdp.hip_yaw_symmetry_l1,
-        weight=-1.0,
-        params={
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=["left_hip_yaw_joint", "right_hip_yaw_joint"],
-                preserve_order=True,
-            ),
-        },
-    )
+    # hip_yaw_lr_symmetry = RewTerm(
+    #     func=custom_mdp.hip_yaw_symmetry_l1,
+    #     weight=-1.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             joint_names=["left_hip_yaw_joint", "right_hip_yaw_joint"],
+    #             preserve_order=True,
+    #         ),
+    #     },
+    # )
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,
         weight=-0.3,
@@ -280,6 +281,24 @@ class TahitiC1VelocityRewardsCfg:
         params={
             "command_name": "base_velocity",
             "command_threshold": 0.1,
+        },
+    )
+
+    feet_contact_force = RewTerm(
+        func=mdp.contact_forces,
+        weight=-0.001,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "threshold": 600.0,
+        },
+    )
+
+    feet_lateral_clearance = RewTerm(
+        func=custom_mdp.feet_lateral_distance_clearance,
+        weight=-1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "min_distance": 0.12,
         },
     )
 
@@ -331,14 +350,14 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # bias reflects real hardware typically over CAD mass. Tighter than
         # HV1.2's (-2, +5) because Tahiti C1's base is 6× lighter — same
         # percentage envelope, absolute values scaled down.
-        self.events.add_base_mass.params["mass_distribution_params"] = (-1.0, 3.0)
+        self.events.add_base_mass.params["mass_distribution_params"] = (-2.0, 5.0)
 
         # ±2 cm horizontal, ±0.5 cm vertical CoM offset on base_link.
         self.events.base_com.params["asset_cfg"].body_names = "base_link"
         self.events.base_com.params["com_range"] = {
             "x": (-0.02, 0.02),
             "y": (-0.02, 0.02),
-            "z": (-0.005, 0.005),
+            "z": (-0.01, 0.01),
         }
 
         # First-training: NO persistent world-frame wrench on the base. This
@@ -349,12 +368,12 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # disables the term while keeping the event registered — easy to
         # re-enable in a second-stage refinement.
         self.events.base_external_force_torque.params["asset_cfg"].body_names = "base_link"
-        self.events.base_external_force_torque.params["force_range"] = (0.0, 0.0)
-        self.events.base_external_force_torque.params["torque_range"] = (0.0, 0.0)
+        self.events.base_external_force_torque.params["force_range"] = (-2.0, 2.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-1.0, 1.0)
 
         # Ground friction: static 0.5-1.0, dynamic 0.4-0.9. Narrower than
         # HV1.2's 0.4-1.2 / 0.3-1.0 for a milder first run.
-        self.events.physics_material.params["static_friction_range"] = (0.5, 1.0)
+        self.events.physics_material.params["static_friction_range"] = (0.4, 1.0)
         self.events.physics_material.params["dynamic_friction_range"] = (0.4, 0.9)
 
         # Spawn at exactly the default joint pose (no random scale) so all envs

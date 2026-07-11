@@ -15,6 +15,7 @@ import torch
 
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -147,6 +148,21 @@ def hip_yaw_symmetry_l1(
     wz_cmd = command[:, 2]
     softness = torch.exp(-(wz_cmd * wz_cmd) / (turn_softness_std ** 2))
     return sym_violation * softness
+
+def feet_lateral_distance_clearance(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    min_distance: float = 0.12,
+) -> torch.Tensor:
+    """One-sided clearance penalty: positive when the two feet are LATERALLY
+    closer than min_distance (measured in the robot's yaw frame). Use with
+    NEGATIVE weight. asset_cfg.body_ids must resolve to exactly two feet."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    feet_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, :]  # (N,2,3)
+    rel_pos_w = feet_pos_w[:, 1] - feet_pos_w[:, 0]               # (N,3)
+    rel_pos_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), rel_pos_w)
+    lateral_distance = torch.abs(rel_pos_yaw[:, 1])
+    return torch.clamp(min_distance - lateral_distance, min=0.0)
 
 
 def stand_to_walk_command_curriculum(

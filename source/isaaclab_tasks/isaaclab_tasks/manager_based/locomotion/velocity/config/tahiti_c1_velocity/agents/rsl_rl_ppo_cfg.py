@@ -36,7 +36,7 @@ class TahitiC1VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         # 0.005 entropy_coef — the default from HV1.2's first-run baseline.
         # Enough to encourage exploration during Phase 1 standing, low enough
         # that once Phase 3 tracking rewards fire the policy commits.
-        entropy_coef=0.005,
+        entropy_coef=0.002,
         num_learning_epochs=5,
         num_mini_batches=4,
         # 1e-3 — the standard locomotion starting LR. Adaptive schedule will

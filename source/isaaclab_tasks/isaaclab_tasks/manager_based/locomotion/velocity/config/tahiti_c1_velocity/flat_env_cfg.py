@@ -73,13 +73,13 @@ class TahitiC1VelocityObservationsCfg:
 
     @configclass
     class PolicyCfg(ObsGroup):
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.3, n_max=0.3))
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
-        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.05, n_max=0.05))
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-2.0, n_max=2.0))
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
@@ -91,13 +91,11 @@ class TahitiC1VelocityObservationsCfg:
 
 @configclass
 class TahitiC1VelocityEventCfg(EventCfg):
-    """Mild sim-to-real motor DR for the first training run.
+    """Aggressive sim-to-real DR for the robustness refinement run.
 
-    ±5 % on Kp/Kd and armature/friction. Halved again vs the HV1.2 first-run
-    settings (±10 %) because Tahiti C1 has fewer joints and no upper-body
-    compensation DoFs — the policy has less bandwidth to hedge against DR.
-    Ramp to ±10 % / ±20 % in a second-stage refinement once a converged
-    baseline exists.
+    ±15 % on Kp/Kd and armature/friction (Berkeley uses ±20 %). ±0.05 rad
+    per-joint encoder zero-offset via randomize_joint_default_pos — the
+    highest-value DR term for the arc/drift symptoms seen on hardware.
     """
 
     actuator_gains_randomize = EventTerm(
@@ -105,8 +103,8 @@ class TahitiC1VelocityEventCfg(EventCfg):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "stiffness_distribution_params": (0.95, 1.05),
-            "damping_distribution_params": (0.95, 1.05),
+            "stiffness_distribution_params": (0.85, 1.15),
+            "damping_distribution_params": (0.85, 1.15),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -116,10 +114,24 @@ class TahitiC1VelocityEventCfg(EventCfg):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "friction_distribution_params": (0.95, 1.05),
-            "armature_distribution_params": (0.95, 1.05),
+            "friction_distribution_params": (0.85, 1.15),
+            "armature_distribution_params": (0.85, 1.15),
             "operation": "scale",
             "distribution": "uniform",
+        },
+    )
+    # Per-joint encoder zero-offset randomization. joint_pos_rel obs and the
+    # JointPositionActionCfg (use_default_offset=True) both anchor on
+    # default_joint_pos, so this shifts both the sensed zero and the commanded
+    # zero for each env — matches real hardware where each motor's absolute
+    # encoder is mounted with a small angular error from the URDF nominal.
+    joint_default_pos_randomize = EventTerm(
+        func=custom_mdp.randomize_joint_default_pos,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+            "pos_distribution_params": (-0.05, 0.05),
+            "operation": "add",
         },
     )
 
@@ -168,14 +180,15 @@ class TahitiC1VelocityRewardsCfg:
     )
     foot_clearance = RewTerm(
         func=custom_mdp.foot_clearance_reward,
-        weight=0.3,
+        weight=0.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            # 0.10 m → larger clearance than HV1.2's 0.07 m. Tahiti C1's ankle
-            # roll link sits ~1.3 cm below its origin, so this yields ~8-9 cm of
-            # visible foot lift above the ground during swing — the "realistic
-            # knee swing" gait.
-            "target_height": 0.10,
+            # 0.15 m target → ankle_roll link sits ~1.3 cm below its origin,
+            # so this yields ~13-14 cm of visible foot lift above the ground
+            # during swing. Weight bumped 0.3 → 0.5 so the reward can meaningfully
+            # pull the policy toward a taller swing arc without being swamped
+            # by tracking / smoothness terms.
+            "target_height": 0.15,
             "std": 0.05,
             "tanh_mult": 2.0,
         },
@@ -206,9 +219,13 @@ class TahitiC1VelocityRewardsCfg:
     )
 
     # ---- effort / smoothness ------------------------------------------
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-2.0e-6)
+    # Bumped 4-5× vs first-training defaults to kill the deploy-time jitter that
+    # emerged after obs noise + DR were widened. Under wider DR the policy
+    # tends to hedge with reactive action deltas; raising the price of every
+    # delta forces it toward a smoother mapping.
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.0e-6)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
+    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-5.0e-6)
 
     # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
@@ -283,6 +300,18 @@ class TahitiC1VelocityRewardsCfg:
             "command_threshold": 0.1,
         },
     )
+    # Standstill-only action-rate penalty — the dedicated jitter killer.
+    # At weight -0.5 this fires 10× harder than the always-on action_rate_l2
+    # whenever the operator is not commanding motion, so the policy learns to
+    # freeze the raw action vector at rest. Zero during any commanded walk.
+    stand_still_action_rate = RewTerm(
+        func=custom_mdp.stand_still_action_rate_l2,
+        weight=-0.5,
+        params={
+            "command_name": "base_velocity",
+            "command_threshold": 0.1,
+        },
+    )
 
     feet_contact_force = RewTerm(
         func=mdp.contact_forces,
@@ -329,7 +358,7 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "slow_scale": 0.3,
                 "lin_vel_x_full": (-1.0, 1.0),
                 "lin_vel_y_full": (-0.5, 0.5),
-                "ang_vel_z_full": (-0.5, 0.5),
+                "ang_vel_z_full": (-1.0, 1.0),
                 "rel_standing_envs_phase1": 1.0,
                 "rel_standing_envs_phase2": 0.3,
                 "rel_standing_envs_phase3": 0.1,
@@ -339,7 +368,7 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # ---------------- commands: final (phase-3) ranges -------------------
         self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
-        self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.ranges.heading = (-3.14, 3.14)
         self.commands.base_velocity.rel_standing_envs = 0.1
 
@@ -352,45 +381,43 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # percentage envelope, absolute values scaled down.
         self.events.add_base_mass.params["mass_distribution_params"] = (-2.0, 5.0)
 
-        # ±2 cm horizontal, ±0.5 cm vertical CoM offset on base_link.
+        # ±4 cm horizontal, ±2 cm vertical CoM offset on base_link.
         self.events.base_com.params["asset_cfg"].body_names = "base_link"
         self.events.base_com.params["com_range"] = {
-            "x": (-0.02, 0.02),
-            "y": (-0.02, 0.02),
-            "z": (-0.01, 0.01),
+            "x": (-0.04, 0.04),
+            "y": (-0.04, 0.04),
+            "z": (-0.02, 0.02),
         }
 
-        # First-training: NO persistent world-frame wrench on the base. This
-        # is the single most "directional" DR effect (each env must produce a
-        # constant counter-torque for its randomly-sampled wrench for the whole
-        # episode), and it's the reason to introduce it later once a clean
-        # baseline exists. Setting force/torque range to (0,0) effectively
-        # disables the term while keeping the event registered — easy to
-        # re-enable in a second-stage refinement.
+        # Persistent per-episode wrench on the base: ±2 N linear, ±2 N·m torque
+        # (matches Berkeley). Simulates CoM misalignment + a small aero/cable
+        # bias the robot must counter for the whole episode.
         self.events.base_external_force_torque.params["asset_cfg"].body_names = "base_link"
         self.events.base_external_force_torque.params["force_range"] = (-2.0, 2.0)
-        self.events.base_external_force_torque.params["torque_range"] = (-1.0, 1.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-2.0, 2.0)
 
         # Ground friction: static 0.5-1.0, dynamic 0.4-0.9. Narrower than
         # HV1.2's 0.4-1.2 / 0.3-1.0 for a milder first run.
         self.events.physics_material.params["static_friction_range"] = (0.4, 1.0)
         self.events.physics_material.params["dynamic_friction_range"] = (0.4, 0.9)
 
-        # Spawn at exactly the default joint pose (no random scale) so all envs
-        # start from the same clean stance during Phase 1.
-        self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
-        # Small reset velocity noise — mild random-init-state robustness.
+        # Reset joint pose scale (0.5, 1.5): each env spawns with all joints at
+        # 50–150 % of default_joint_pos — forces the policy to recover from
+        # off-nominal starting postures instead of overfitting to a clean pose.
+        self.events.reset_robot_joints.params["position_range"] = (0.5, 1.5)
+        # ±0.5 pos and ±0.5 vel on every axis (matches Berkeley). Trains real
+        # push-recovery / random-init-state robustness.
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (-0.1, 0.1), "y": (-0.1, 0.1), "z": (-0.1, 0.1),
-                "roll": (-0.1, 0.1), "pitch": (-0.1, 0.1), "yaw": (-0.1, 0.1),
+                "x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.5, 0.5),
+                "roll": (-0.5, 0.5), "pitch": (-0.5, 0.5), "yaw": (-0.5, 0.5),
             },
         }
-        # Push every 12-15 s with ±0.5 m/s velocity impulse — enough to force
-        # a push-recovery response without stacking hits.
+        # Push every 12-15 s with ±1.0 m/s velocity impulse — Berkeley-strength
+        # perturbation without stacking hits.
         self.events.push_robot.interval_range_s = (12.0, 15.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}
+        self.events.push_robot.params = {"velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)}}
 
         # ---------------- terminations: base_link contact only ---------------
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base_link"
@@ -411,13 +438,13 @@ class TahitiC1VelocityFlatEnvCfg_PLAY(TahitiC1VelocityFlatEnvCfg):
         self.observations.policy.enable_corruption = False
         # Push robot during play for visual push-recovery inspection.
         self.events.push_robot.interval_range_s = (6.0, 8.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}
+        self.events.push_robot.params = {"velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)}}
         # Disable curriculum in play (common_step_counter starts at 0, would
         # force Phase 1 and overwrite the play ranges).
         self.curriculum.command_phase = None
         # Spread envs across the full command space.
         self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
-        self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
+        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.resampling_time_range = (5.0, 5.0)
         self.commands.base_velocity.rel_standing_envs = 0.2

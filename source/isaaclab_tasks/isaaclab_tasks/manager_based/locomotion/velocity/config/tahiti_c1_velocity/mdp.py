@@ -18,7 +18,45 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv
+    from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
+
+
+def randomize_joint_default_pos(
+    env: "ManagerBasedEnv",
+    env_ids: torch.Tensor | None,
+    asset_cfg: SceneEntityCfg,
+    pos_distribution_params: tuple[float, float],
+    operation: str = "add",
+) -> None:
+    """Startup-mode DR: perturb each env's default_joint_pos in-place.
+
+    Simulates per-joint encoder zero-offset error. joint_pos_rel obs and the
+    JointPositionActionCfg with use_default_offset=True both anchor on
+    default_joint_pos, so shifting it here mimics a real encoder mounted with
+    a small angular offset from the nominal URDF pose. Highest-value DR term
+    for sim-to-real drift symptoms.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_ids = asset_cfg.joint_ids
+    if isinstance(joint_ids, slice):
+        joint_ids = list(range(asset.num_joints))
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, device=asset.device)
+    joint_ids_t = torch.as_tensor(joint_ids, device=asset.device, dtype=torch.long)
+
+    lo, hi = pos_distribution_params
+    offsets = torch.empty(
+        (env_ids.numel(), joint_ids_t.numel()), device=asset.device
+    ).uniform_(lo, hi)
+
+    idx = (env_ids.view(-1, 1), joint_ids_t.view(1, -1))
+    current = asset.data.default_joint_pos[idx]
+    if operation == "add":
+        asset.data.default_joint_pos[idx] = current + offsets
+    elif operation == "scale":
+        asset.data.default_joint_pos[idx] = current * offsets
+    else:
+        raise ValueError(f"randomize_joint_default_pos: unknown operation {operation!r}")
 
 
 def air_time_variance_penalty(
@@ -104,6 +142,27 @@ def stand_still_joint_deviation_l1(
     default_pos = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
     deviation = torch.sum(torch.abs(joint_pos - default_pos), dim=1)
     return deviation * standing_mask
+
+
+def stand_still_action_rate_l2(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """L2 action delta gated to standing commands only.
+
+    Zero during walking so it does not fight swing-leg dynamics; heavy at
+    standstill so the policy learns to freeze the ACTIONS (not just the joints)
+    — kills the residual chatter that survives even when joints are pinned
+    near their default pose. Use with a NEGATIVE weight.
+    """
+    command = env.command_manager.get_command(command_name)
+    cmd_norm = torch.norm(command[:, :3], dim=1)
+    standing_mask = (cmd_norm < command_threshold).float()
+    action = env.action_manager.action
+    prev_action = env.action_manager.prev_action
+    action_diff = action - prev_action
+    return torch.sum(action_diff * action_diff, dim=1) * standing_mask
 
 
 def stand_still_base_ang_vel_l2(

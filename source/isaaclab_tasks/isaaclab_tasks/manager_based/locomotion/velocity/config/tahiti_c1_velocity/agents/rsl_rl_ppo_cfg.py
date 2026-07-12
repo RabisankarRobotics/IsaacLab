@@ -33,10 +33,12 @@ class TahitiC1VelocityFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        # 0.005 entropy_coef — the default from HV1.2's first-run baseline.
-        # Enough to encourage exploration during Phase 1 standing, low enough
-        # that once Phase 3 tracking rewards fire the policy commits.
-        entropy_coef=0.002,
+        # 0.005 entropy_coef — restored from the 0.002 refinement value now
+        # that the DR envelope is wider (±15 % actuator, ±0.05 rad encoder
+        # zero-offset, ±1 m/s pushes). More exploration is required so the
+        # policy can find a strategy that survives across the DR distribution
+        # instead of overfitting to one operating point.
+        entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
         # 1e-3 — the standard locomotion starting LR. Adaptive schedule will

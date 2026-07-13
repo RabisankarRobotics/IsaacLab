@@ -404,20 +404,20 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # Reset joint pose scale (0.5, 1.5): each env spawns with all joints at
         # 50–150 % of default_joint_pos — forces the policy to recover from
         # off-nominal starting postures instead of overfitting to a clean pose.
-        self.events.reset_robot_joints.params["position_range"] = (0.5, 1.5)
+        self.events.reset_robot_joints.params["position_range"] = (0.8, 1.2)
         # ±0.5 pos and ±0.5 vel on every axis (matches Berkeley). Trains real
         # push-recovery / random-init-state robustness.
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.5, 0.5),
-                "roll": (-0.5, 0.5), "pitch": (-0.5, 0.5), "yaw": (-0.5, 0.5),
+                "x": (-0.2, 0.2), "y": (-0.2, 0.2), "z": (-0.2, 0.2),
+                "roll": (-0.2, 0.2), "pitch": (-0.2, 0.2), "yaw": (-0.2, 0.2),
             },
         }
         # Push every 12-15 s with ±1.0 m/s velocity impulse — Berkeley-strength
         # perturbation without stacking hits.
         self.events.push_robot.interval_range_s = (12.0, 15.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)}}
+        self.events.push_robot.params = {"velocity_range": {"x": (-0.7, 0.7), "y": (-0.7, 0.7)}}
 
         # ---------------- terminations: base_link contact only ---------------
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base_link"

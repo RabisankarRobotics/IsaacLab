@@ -219,13 +219,14 @@ class TahitiC1VelocityRewardsCfg:
     )
 
     # ---- effort / smoothness ------------------------------------------
-    # Bumped 4-5× vs first-training defaults to kill the deploy-time jitter that
-    # emerged after obs noise + DR were widened. Under wider DR the policy
-    # tends to hedge with reactive action deltas; raising the price of every
-    # delta forces it toward a smoother mapping.
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.0e-6)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-5.0e-6)
+    # Restored to the first-training defaults. The 4-5× bumped values fought
+    # the tracking rewards during fresh training — action_rate_l2 penalty
+    # (-0.37) dominated the reward sum vs tracking (+0.85), the policy could
+    # not commit to a gait. Baseline values first, add jitter suppression
+    # later via hot resume once a walking policy exists.
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-2.0e-6)
 
     # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
@@ -301,12 +302,13 @@ class TahitiC1VelocityRewardsCfg:
         },
     )
     # Standstill-only action-rate penalty — the dedicated jitter killer.
-    # At weight -0.5 this fires 10× harder than the always-on action_rate_l2
-    # whenever the operator is not commanding motion, so the policy learns to
-    # freeze the raw action vector at rest. Zero during any commanded walk.
+    # Weight dropped from -0.5 → -0.1: at -0.5 it added to the action-penalty
+    # stack that was preventing gait commitment. -0.1 keeps a small anti-jitter
+    # signal at rest without competing with tracking rewards. Zero during any
+    # commanded walk.
     stand_still_action_rate = RewTerm(
         func=custom_mdp.stand_still_action_rate_l2,
-        weight=-0.5,
+        weight=-0.1,
         params={
             "command_name": "base_velocity",
             "command_threshold": 0.1,

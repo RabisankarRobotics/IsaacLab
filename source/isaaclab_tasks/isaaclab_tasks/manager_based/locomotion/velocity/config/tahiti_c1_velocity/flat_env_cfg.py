@@ -286,7 +286,7 @@ class TahitiC1VelocityRewardsCfg:
     # micro-cycling the feet.
     stand_still_no_cmd = RewTerm(
         func=custom_mdp.stand_still_joint_deviation_l1,
-        weight=-3.0,
+        weight=-1.0,
         params={
             "command_name": "base_velocity",
             "command_threshold": 0.1,
@@ -299,7 +299,7 @@ class TahitiC1VelocityRewardsCfg:
     # Kill the standing sway directly — L2 on base_ang_vel gated to standstill.
     stand_still_base_ang_vel = RewTerm(
         func=custom_mdp.stand_still_base_ang_vel_l2,
-        weight=-3.0,
+        weight=-1.0,
         params={
             "command_name": "base_velocity",
             "command_threshold": 0.1,
@@ -324,7 +324,7 @@ class TahitiC1VelocityRewardsCfg:
         weight=-0.001,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 600.0,
+            "threshold": 700.0,
         },
     )
 

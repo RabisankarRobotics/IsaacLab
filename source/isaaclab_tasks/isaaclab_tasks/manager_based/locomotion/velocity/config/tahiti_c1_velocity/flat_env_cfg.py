@@ -79,7 +79,7 @@ class TahitiC1VelocityObservationsCfg:
         )
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.05, n_max=0.05))
-        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-2.0, n_max=2.0))
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
@@ -103,8 +103,8 @@ class TahitiC1VelocityEventCfg(EventCfg):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "stiffness_distribution_params": (0.85, 1.15),
-            "damping_distribution_params": (0.85, 1.15),
+            "stiffness_distribution_params": (0.90, 1.10),
+            "damping_distribution_params": (0.90, 1.10),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -114,8 +114,8 @@ class TahitiC1VelocityEventCfg(EventCfg):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "friction_distribution_params": (0.85, 1.15),
-            "armature_distribution_params": (0.85, 1.15),
+            "friction_distribution_params": (0.90, 1.10),
+            "armature_distribution_params": (0.90, 1.10),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -175,7 +175,7 @@ class TahitiC1VelocityRewardsCfg:
     )
     feet_airtime_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        weight=-3.0,
+        weight=-1.5,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     foot_clearance = RewTerm(
@@ -197,10 +197,11 @@ class TahitiC1VelocityRewardsCfg:
         func=custom_mdp.knee_too_straight_penalty,
         weight=-0.5,
         params={
-            # 0.35 rad is just under the 0.36 default — swing-phase knees
-            # (>= 0.7 rad) pay 0, stance-phase knees at rest pay ~0, only
-            # actively locked-straight knees (stilt walk) pay meaningful cost.
-            "threshold": 0.35,
+            # 0.20 rad, dropped from 0.35. 0.35 was razor-close to the 0.36
+            # default; with joint_default_pos_randomize adding ±0.05 rad, half
+            # the envs sat below threshold at rest and paid this penalty
+            # constantly. 0.20 fires only on real locked-straight knees.
+            "threshold": 0.20,
             "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_knee_joint$"]),
         },
     )
@@ -208,6 +209,9 @@ class TahitiC1VelocityRewardsCfg:
     # ---- stability -----------------------------------------------------
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.08)
+    # -2.0 was double-counting with lin_vel_z_l2 during gait transitions;
+    # -1.0 keeps the "stay upright" pressure without paying ~0.1/step for
+    # small tilt during a normal step.
     flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
     # Below-target base height only — free to stand tall. 0.85 m is 5 cm below
     # the settled ~0.90 m stance height, so normal walking pays 0, only real
@@ -383,11 +387,14 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # percentage envelope, absolute values scaled down.
         self.events.add_base_mass.params["mass_distribution_params"] = (-2.0, 5.0)
 
-        # ±4 cm horizontal, ±2 cm vertical CoM offset on base_link.
+        # ±3 cm horizontal, ±2 cm vertical CoM offset on base_link.
+        # Reduced from ±4 cm — Tahiti C1 base is only ~13 kg, a 4 cm CoM shift
+        # on such a light base produces a larger tipping torque than intended
+        # and swamps the tracking signal during walking.
         self.events.base_com.params["asset_cfg"].body_names = "base_link"
         self.events.base_com.params["com_range"] = {
-            "x": (-0.04, 0.04),
-            "y": (-0.04, 0.04),
+            "x": (-0.03, 0.03),
+            "y": (-0.03, 0.03),
             "z": (-0.02, 0.02),
         }
 

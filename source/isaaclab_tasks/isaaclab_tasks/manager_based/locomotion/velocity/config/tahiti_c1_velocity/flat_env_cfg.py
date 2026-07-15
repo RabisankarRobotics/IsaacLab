@@ -201,7 +201,7 @@ class TahitiC1VelocityRewardsCfg:
         weight=-3.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "min_distance": 0.15,
+            "min_distance": 0.2,
         },
     )
 
@@ -381,10 +381,14 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "roll": (-0.1, 0.1), "pitch": (-0.1, 0.1), "yaw": (-0.1, 0.1),
             },
         }
-        # Push every 12-15 s with ±0.5 m/s velocity impulse — enough to force
-        # a push-recovery response without stacking hits.
-        self.events.push_robot.interval_range_s = (12.0, 15.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}
+        # Round C (2026-07-15): stronger push training to fix -0.5 m/s backward
+        # walk fall in MuJoCo. A -0.8 m/s x-push is mechanically identical to
+        # walking backward at 0.8 m/s — every pushed episode drills the exact
+        # heel-loaded backward-recovery skill that was capping around -0.3 m/s.
+        # Interval tightened 12-15 s → 7-10 s so pushes are more frequent per
+        # episode, more gradient signal per iteration.
+        self.events.push_robot.interval_range_s = (7.0, 10.0)
+        self.events.push_robot.params = {"velocity_range": {"x": (-0.8, 0.8), "y": (-0.8, 0.8)}}
 
         # ---------------- terminations: base_link contact only ---------------
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base_link"

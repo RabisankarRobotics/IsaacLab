@@ -198,7 +198,7 @@ class TahitiC1VelocityRewardsCfg:
     # cheat gaits, not an active shaper.
     feet_lateral_clearance = RewTerm(
         func=custom_mdp.feet_lateral_distance_clearance,
-        weight=-2.0,
+        weight=-3.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
             "min_distance": 0.15,
@@ -241,12 +241,7 @@ class TahitiC1VelocityRewardsCfg:
     # (-0.1) so it can't fight the symmetry / turning terms.
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        # weight -1.0 (was -0.5): stronger pin on each hip_yaw to kill the
-        # slow yaw drift that shows up as arc walking. Preferred over the
-        # commented-out hip_yaw_lr_symmetry term because that one BLOCKS the
-        # same-sign hip_yaw twitch the policy uses to CORRECT drift — pinning
-        # each joint individually leaves the corrective twitch alive.
-        weight=-1.0,
+        weight=-0.7,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_yaw_joint$"])},
     )
     # Symmetry-only hip_yaw penalty — zero when left/right mirror, non-zero
@@ -270,11 +265,7 @@ class TahitiC1VelocityRewardsCfg:
     )
     joint_deviation_ankle_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        # weight -1.0 (was -0.5): observed policy tilting ankle_roll inward
-        # during swing and rolling it flat on contact — using the ankle as a
-        # lateral-balance crutch. Stronger pin forces the policy to solve
-        # lateral balance with hip_roll / foot placement instead.
-        weight=-1.0,
+        weight=-0.5,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_ankle_roll_joint$"])},
     )
 
@@ -285,11 +276,7 @@ class TahitiC1VelocityRewardsCfg:
     # micro-cycling the feet.
     stand_still_no_cmd = RewTerm(
         func=custom_mdp.stand_still_joint_deviation_l1,
-        # weight -5.0 (was -3.0): prev run fired at -0.34/step, penalty was
-        # active but not enough to kill the standing vibration the user saw
-        # on hardware. Bigger weight makes any joint jitter at standstill
-        # cost more, forcing the policy to freeze.
-        weight=-5.0,
+        weight=-3.0,
         params={
             "command_name": "base_velocity",
             "command_threshold": 0.1,
@@ -302,10 +289,7 @@ class TahitiC1VelocityRewardsCfg:
     # Kill the standing sway directly — L2 on base_ang_vel gated to standstill.
     stand_still_base_ang_vel = RewTerm(
         func=custom_mdp.stand_still_base_ang_vel_l2,
-        # weight -5.0 (was -3.0): same reason as stand_still_no_cmd — the
-        # small rotation-in-place the user observed on hardware is base yaw
-        # sway that this term targets directly.
-        weight=-5.0,
+        weight=-3.0,
         params={
             "command_name": "base_velocity",
             "command_threshold": 0.1,

@@ -319,6 +319,18 @@ def main():
                         help="Stick deadzone, raw units in [0, 1].")
     parser.add_argument("--gamepad_index", type=int, default=0,
                         help="pygame joystick index when multiple pads are attached.")
+
+    # -- Actuator delay (match Isaac DelayedPDActuatorCfg 0-6 phys steps) --
+    parser.add_argument("--delay_min", type=int, default=0,
+                        help="Min per-joint actuator delay in physics steps. Default 0 "
+                             "matches Isaac DelayedPDActuatorCfg. Sampled once at startup.")
+    parser.add_argument("--delay_max", type=int, default=6,
+                        help="Max per-joint actuator delay in physics steps. Default 6 "
+                             "matches Isaac DelayedPDActuatorCfg (0-30 ms at sim_dt=0.005). "
+                             "Set --delay_max=0 (with --delay_min=0) to disable delay for A/B.")
+    parser.add_argument("--delay_seed", type=int, default=None,
+                        help="Seed for the per-joint delay sample. Default: unseeded (differs "
+                             "run-to-run, like Isaac's per-env DR). Pin for reproducible tests.")
     args = parser.parse_args()
 
     # ---- Load config ------------------------------------------------------
@@ -481,6 +493,28 @@ def main():
     print(f"[deploy] first obs dim     : {first_obs.shape[0]} ✓")
     print(f"[deploy] starting viewer …")
 
+    # ---- Actuator delay setup (Isaac DelayedPDActuatorCfg match) --------
+    # Isaac trains under a per-joint uniform random delay [min_delay, max_delay]
+    # on the PD target (TAHITI_C1_CFG DelayedPDActuatorCfg). Applying targets
+    # IMMEDIATELY here creates a sim-to-sim gap the policy trained to anticipate
+    # — it over-corrects, destabilizing marginal gaits (observed as MuJoCo
+    # backward-walk falls that don't reproduce in Isaac PLAY).
+    delay_min = int(args.delay_min)
+    delay_max = int(args.delay_max)
+    if delay_max < delay_min:
+        raise ValueError(f"--delay_max ({delay_max}) < --delay_min ({delay_min})")
+    delay_rng = np.random.default_rng(args.delay_seed)
+    delays_per_joint_mj = delay_rng.integers(delay_min, delay_max + 1, size=n_dof).astype(np.int32)
+    delay_buf_size = delay_max + 1
+    # Rolling buffer of the last `delay_buf_size` physics-step PD targets, one
+    # row per past step. Init all rows to the default pose so the first
+    # (delay_max) steps see the default (matches Isaac's fresh-episode buffer).
+    target_history_mj = np.tile(q_default_mj.astype(np.float32), (delay_buf_size, 1))
+    joint_idx_arange = np.arange(n_dof, dtype=np.int32)
+    print(f"[deploy] actuator delay    : per-joint uniform [{delay_min}, {delay_max}] steps "
+          f"({delay_min*sim_dt*1000:.0f}-{delay_max*sim_dt*1000:.0f} ms)")
+    print(f"[deploy] sampled delays    : {delays_per_joint_mj.tolist()}")
+
     # ---- Control loop ---------------------------------------------------
     target_dof_pos_mj = q_default_mj.copy()
     counter = 0
@@ -495,10 +529,17 @@ def main():
         while viewer.is_running() and time.time() - start < args.duration:
             step_start = time.time()
 
-            # PD control every physics step (200 Hz default).
+            # PD control every physics step (200 Hz default), using the
+            # per-joint DELAYED target so this runner matches Isaac's
+            # DelayedPDActuatorCfg. Push the currently-held target into the
+            # rolling history first, then read out the delayed slice per joint.
+            target_history_mj[counter % delay_buf_size] = target_dof_pos_mj
+            idx = (counter - delays_per_joint_mj) % delay_buf_size
+            delayed_target_mj = target_history_mj[idx, joint_idx_arange]
+
             q_mj = d.qpos[7:]
             dq_mj = d.qvel[6:]
-            tau = kp_mj * (target_dof_pos_mj - q_mj) - kd_mj * dq_mj
+            tau = kp_mj * (delayed_target_mj - q_mj) - kd_mj * dq_mj
             tau = np.clip(tau, -tau_limit_mj, tau_limit_mj)
             d.qfrc_applied[6:] = tau
 

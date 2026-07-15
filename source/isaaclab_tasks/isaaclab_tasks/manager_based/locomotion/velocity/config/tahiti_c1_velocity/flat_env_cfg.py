@@ -201,7 +201,7 @@ class TahitiC1VelocityRewardsCfg:
         weight=-3.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "min_distance": 0.2,
+            "min_distance": 0.20,
         },
     )
 
@@ -346,12 +346,16 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # percentage envelope, absolute values scaled down.
         self.events.add_base_mass.params["mass_distribution_params"] = (-1.0, 3.0)
 
-        # ±2 cm horizontal, ±0.5 cm vertical CoM offset on base_link.
+        # ±4 cm horizontal, ±1 cm vertical CoM offset on base_link. Bumped
+        # from ±2 cm / ±0.5 cm (2026-07-15) after observing that backward
+        # walk struggles because the policy has no CoM-shift robustness —
+        # real robot's CoM sits off-nominal from cables/electronics and any
+        # offset compounds the already-marginal heel-loaded backward stance.
         self.events.base_com.params["asset_cfg"].body_names = "base_link"
         self.events.base_com.params["com_range"] = {
-            "x": (-0.02, 0.02),
-            "y": (-0.02, 0.02),
-            "z": (-0.005, 0.005),
+            "x": (-0.04, 0.04),
+            "y": (-0.04, 0.04),
+            "z": (-0.01, 0.01),
         }
 
         # First-training: NO persistent world-frame wrench on the base. This
@@ -373,12 +377,15 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # Spawn at exactly the default joint pose (no random scale) so all envs
         # start from the same clean stance during Phase 1.
         self.events.reset_robot_joints.params["position_range"] = (1.0, 1.0)
-        # Small reset velocity noise — mild random-init-state robustness.
+        # Reset velocity noise bumped ±0.1 → ±0.3 (2026-07-15) so every episode
+        # starts mid-perturbation, not from near-still. Forces the policy to
+        # build a recovery reflex, not just a start-from-still reflex —
+        # complements the push_robot bump and CoM DR for backward-walk balance.
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (-0.1, 0.1), "y": (-0.1, 0.1), "z": (-0.1, 0.1),
-                "roll": (-0.1, 0.1), "pitch": (-0.1, 0.1), "yaw": (-0.1, 0.1),
+                "x": (-0.3, 0.3), "y": (-0.3, 0.3), "z": (-0.3, 0.3),
+                "roll": (-0.3, 0.3), "pitch": (-0.3, 0.3), "yaw": (-0.3, 0.3),
             },
         }
         # Round C (2026-07-15): stronger push training to fix -0.5 m/s backward

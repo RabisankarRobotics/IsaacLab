@@ -171,11 +171,11 @@ class TahitiC1VelocityRewardsCfg:
         weight=0.3,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            # 0.15 m → larger clearance than HV1.2's 0.07 m. Tahiti C1's ankle
+            # 0.13 m → larger clearance than HV1.2's 0.07 m. Tahiti C1's ankle
             # roll link sits ~1.3 cm below its origin, so this yields ~8-9 cm of
             # visible foot lift above the ground during swing — the "realistic
             # knee swing" gait.
-            "target_height": 0.15,
+            "target_height": 0.13,
             "std": 0.05,
             "tanh_mult": 2.0,
         },
@@ -198,10 +198,10 @@ class TahitiC1VelocityRewardsCfg:
     # cheat gaits, not an active shaper.
     feet_lateral_clearance = RewTerm(
         func=custom_mdp.feet_lateral_distance_clearance,
-        weight=-3.0,
+        weight=-5.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "min_distance": 0.20,
+            "min_distance": 0.22,
         },
     )
 

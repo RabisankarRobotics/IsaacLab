@@ -306,15 +306,17 @@ def main():
     # -- Gamepad options --
     parser.add_argument("--no_gamepad", action="store_true",
                         help="Disable the Xbox gamepad and drive from --cmd_lin_x/y/z instead.")
-    parser.add_argument("--vx_max", type=float, default=1.0,
+    parser.add_argument("--vx_max", type=float, default=0.8,
                         help="Forward-velocity magnitude at full stick deflection "
-                             "(m/s). Should match training lin_vel_x range.")
+                             "(m/s). Matches training lin_vel_x range (±0.8 m/s "
+                             "as of 2026-07-16, was ±1.0).")
     parser.add_argument("--vy_max", type=float, default=0.5,
                         help="Lateral-velocity magnitude at full deflection (m/s). "
-                             "Should match training lin_vel_y range.")
-    parser.add_argument("--wz_max", type=float, default=1.0,
+                             "Matches training lin_vel_y range (±0.5 m/s).")
+    parser.add_argument("--wz_max", type=float, default=0.5,
                         help="Yaw-rate magnitude at full deflection (rad/s). "
-                             "Should match training ang_vel_z range.")
+                             "Matches training ang_vel_z range (±0.5 rad/s). "
+                             "Was 1.0 — that was OUT of policy training range.")
     parser.add_argument("--deadzone", type=float, default=0.1,
                         help="Stick deadzone, raw units in [0, 1].")
     parser.add_argument("--gamepad_index", type=int, default=0,

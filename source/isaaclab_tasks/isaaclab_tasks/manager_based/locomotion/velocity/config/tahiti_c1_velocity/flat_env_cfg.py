@@ -353,7 +353,11 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # bias reflects real hardware typically over CAD mass. Tighter than
         # HV1.2's (-2, +5) because Tahiti C1's base is 6× lighter — same
         # percentage envelope, absolute values scaled down.
-        self.events.add_base_mass.params["mass_distribution_params"] = (-1.0, 3.0)
+        # Restored (-2, +5) 2026-07-16: real Tahiti C1 measured +5 kg heavier
+        # than URDF. The Jul-11 policy that walked cleanly on real hardware
+        # was trained with this wider range; narrowing it to (-1, +3) is one
+        # of the causes of the current real-robot vibration.
+        self.events.add_base_mass.params["mass_distribution_params"] = (-2.0, 6.0)
 
         # ±4 cm horizontal, ±1 cm vertical CoM offset on base_link. Bumped
         # from ±2 cm / ±0.5 cm (2026-07-15) after observing that backward
@@ -375,8 +379,13 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # disables the term while keeping the event registered — easy to
         # re-enable in a second-stage refinement.
         self.events.base_external_force_torque.params["asset_cfg"].body_names = "base_link"
-        self.events.base_external_force_torque.params["force_range"] = (0.0, 0.0)
-        self.events.base_external_force_torque.params["torque_range"] = (0.0, 0.0)
+        # Restored 2026-07-16: real robot has persistent wrench from cable
+        # drag, off-CoM electronics, and the +5 kg mass surplus. The Jul-11
+        # policy trained WITH ±2 N force / ±2 N-m torque wrench held steady
+        # on real hardware; disabling this term (0, 0) removed that
+        # robustness and is the second cause of real-robot vibration.
+        self.events.base_external_force_torque.params["force_range"] = (-2.0, 2.0)
+        self.events.base_external_force_torque.params["torque_range"] = (-2.0, 2.0)
 
         # Ground friction: static 0.5-1.0, dynamic 0.4-0.9. Narrower than
         # HV1.2's 0.4-1.2 / 0.3-1.0 for a milder first run.

@@ -67,7 +67,7 @@ class GamepadReader:
 
     def __init__(
         self,
-        vx_max: float = 1.0,
+        vx_max: float = 0.8,
         vy_max: float = 0.5,
         wz_max: float = 0.5,
         deadzone: float = 0.1,
@@ -144,7 +144,7 @@ class GamepadReader:
 def _self_test() -> None:
     """Print live stick values so the user can verify the axis mapping."""
     import time
-    reader = GamepadReader(vx_max=1.0, vy_max=0.5, wz_max=0.5, deadzone=0.05)
+    reader = GamepadReader(vx_max=0.8, vy_max=0.5, wz_max=0.5, deadzone=0.05)
     print("[self-test] hold each stick in turn — Ctrl-C to exit")
     try:
         while True:

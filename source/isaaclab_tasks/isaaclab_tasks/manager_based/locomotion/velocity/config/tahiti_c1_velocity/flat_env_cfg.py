@@ -219,8 +219,14 @@ class TahitiC1VelocityRewardsCfg:
     )
 
     # ---- effort / smoothness ------------------------------------------
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    # Bumped 2026-07-16 to shape a smoother gait — real deploy amplifies any
+    # jitter seen in sim, and the policy also slams feet on touchdown. Both
+    # symptoms have the same fix (smoother action → smoother joint acc →
+    # softer footfall). dof_acc 2.5e-7 → 4e-7 (60%), action_rate 0.01 → 0.015
+    # (50%). Combined delta ≈ -0.25 mean reward. Small enough to stay safely
+    # inside sum-of-deltas tolerance on hot resume.
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-4.0e-7)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.015)
 
     # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
@@ -321,7 +327,7 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
                 "stand_until_iters": 2000,
                 "slow_until_iters": 5000,
                 "slow_scale": 0.3,
-                "lin_vel_x_full": (-1.0, 1.0),
+                "lin_vel_x_full": (-0.8, 0.8),
                 "lin_vel_y_full": (-0.5, 0.5),
                 "ang_vel_z_full": (-0.5, 0.5),
                 "rel_standing_envs_phase1": 1.0,
@@ -331,7 +337,10 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         )
 
         # ---------------- commands: final (phase-3) ranges -------------------
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
+        # lin_vel_x narrowed 1.0 → 0.8 (2026-07-16) — user asked to cap forward
+        # / backward at 0.8 m/s to help the policy find a smoother stride at
+        # deploy-realistic speeds. Y and yaw ranges unchanged.
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.8, 0.8)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
         self.commands.base_velocity.ranges.heading = (-3.14, 3.14)
@@ -421,7 +430,7 @@ class TahitiC1VelocityFlatEnvCfg_PLAY(TahitiC1VelocityFlatEnvCfg):
         # force Phase 1 and overwrite the play ranges).
         self.curriculum.command_phase = None
         # Spread envs across the full command space.
-        self.commands.base_velocity.ranges.lin_vel_x = (-1.0, 1.0)
+        self.commands.base_velocity.ranges.lin_vel_x = (-0.8, 0.8)
         self.commands.base_velocity.ranges.lin_vel_y = (-0.5, 0.5)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
         self.commands.base_velocity.resampling_time_range = (5.0, 5.0)

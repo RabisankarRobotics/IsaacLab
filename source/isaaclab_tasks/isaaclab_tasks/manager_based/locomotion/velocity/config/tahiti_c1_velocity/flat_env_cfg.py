@@ -57,9 +57,16 @@ class TahitiC1VelocityActionsCfg:
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=LEG_JOINTS,
+        # Patterns must be mutually exclusive — Isaac Lab's resolver rejects
+        # a joint name that matches two patterns. Enumerate the non-ankle-roll
+        # joints instead of using a ".*" catchall.
         scale={
+            ".*_hip_yaw_joint": 0.25,
+            ".*_hip_pitch_joint": 0.25,
+            ".*_hip_roll_joint": 0.25,
+            ".*_knee_joint": 0.25,
+            ".*_ankle_pitch_joint": 0.25,
             ".*_ankle_roll_joint": 0.10,
-            ".*": 0.25,
         },
         use_default_offset=True,
     )

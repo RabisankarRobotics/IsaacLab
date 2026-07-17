@@ -96,6 +96,91 @@ def list_mujoco_joint_names(m: mujoco.MjModel) -> List[str]:
     return names
 
 
+class FootMetrics:
+    """Track per-foot air-time and knee-swing-amplitude for L/R asymmetry diagnostics.
+
+    - Air-time: time from liftoff to next touchdown, per foot. Keeps a rolling
+      window of the last N completed cycles per side and reports the mean.
+    - Knee amplitude: max minus min knee angle across the current swing phase.
+      Sampled every physics step while the foot is off the ground; snapshot
+      into the rolling window at touchdown.
+    """
+
+    def __init__(
+        self,
+        m: mujoco.MjModel,
+        foot_body_names: Tuple[str, str],
+        knee_isaac_indices: Tuple[int, int],
+        window: int = 6,
+    ):
+        self.body_ids = tuple(
+            mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, name) for name in foot_body_names
+        )
+        self.knee_isaac_indices = knee_isaac_indices
+        self.window = window
+        self.in_contact = [True, True]
+        self.last_liftoff_t = [0.0, 0.0]
+        self.airtimes = [[], []]  # rolling windows per foot
+        self.swing_min_knee = [1e9, 1e9]
+        self.swing_max_knee = [-1e9, -1e9]
+        self.knee_amplitudes = [[], []]
+
+    @staticmethod
+    def _push(buf: List[float], value: float, window: int) -> None:
+        buf.append(value)
+        if len(buf) > window:
+            buf.pop(0)
+
+    def update(self, m: mujoco.MjModel, d: mujoco.MjData, q_isaac: np.ndarray) -> None:
+        contact_now = [False, False]
+        for i in range(d.ncon):
+            c = d.contact[i]
+            b1 = m.geom_bodyid[c.geom1]
+            b2 = m.geom_bodyid[c.geom2]
+            for foot_idx, bid in enumerate(self.body_ids):
+                if b1 == bid or b2 == bid:
+                    contact_now[foot_idx] = True
+
+        for foot_idx in range(2):
+            knee_val = float(q_isaac[self.knee_isaac_indices[foot_idx]])
+            if not contact_now[foot_idx]:
+                # in swing — track min/max knee for amplitude
+                self.swing_min_knee[foot_idx] = min(self.swing_min_knee[foot_idx], knee_val)
+                self.swing_max_knee[foot_idx] = max(self.swing_max_knee[foot_idx], knee_val)
+
+            # edge transitions
+            was = self.in_contact[foot_idx]
+            now = contact_now[foot_idx]
+            if was and not now:
+                # liftoff
+                self.last_liftoff_t[foot_idx] = float(d.time)
+                # reset swing amplitude tracking for the new swing
+                self.swing_min_knee[foot_idx] = knee_val
+                self.swing_max_knee[foot_idx] = knee_val
+            elif (not was) and now:
+                # touchdown — record air-time and knee amplitude for the completed swing
+                airtime = float(d.time) - self.last_liftoff_t[foot_idx]
+                if 0.05 < airtime < 2.0:  # sanity gate: ignore noise blips
+                    self._push(self.airtimes[foot_idx], airtime, self.window)
+                    amp = self.swing_max_knee[foot_idx] - self.swing_min_knee[foot_idx]
+                    self._push(self.knee_amplitudes[foot_idx], amp, self.window)
+            self.in_contact[foot_idx] = now
+
+    def summary(self) -> str:
+        def _mean(buf: List[float]) -> float:
+            return sum(buf) / len(buf) if buf else 0.0
+
+        atL, atR = _mean(self.airtimes[0]), _mean(self.airtimes[1])
+        kaL, kaR = _mean(self.knee_amplitudes[0]), _mean(self.knee_amplitudes[1])
+        nL, nR = len(self.airtimes[0]), len(self.airtimes[1])
+        at_asym = (atL - atR) / max(atL + atR, 1e-6) * 100.0  # % of mean
+        ka_asym = (kaL - kaR) / max(kaL + kaR, 1e-6) * 100.0
+        return (
+            f"air_time  L={atL:.3f}s R={atR:.3f}s  asym={at_asym:+.1f}%  (n={nL}/{nR})  "
+            f"knee_amp  L={kaL:.3f} R={kaR:.3f}  asym={ka_asym:+.1f}%"
+        )
+
+
 def build_joint_maps(
     isaac_joint_names: List[str],
     action_joint_names: List[str],
@@ -551,6 +636,17 @@ def main():
           f"({delay_min*sim_dt*1000:.0f}-{delay_max*sim_dt*1000:.0f} ms)")
     print(f"[deploy] sampled delays    : {delays_per_joint_mj.tolist()}")
 
+    # ---- Foot-metrics diagnostic (per-foot air time + knee swing amplitude) ----
+    # Isaac BFS order — knees are at indices 6 (left) and 7 (right).
+    knee_isaac_L = joint_names_isaac.index("left_knee_joint")
+    knee_isaac_R = joint_names_isaac.index("right_knee_joint")
+    foot_metrics = FootMetrics(
+        m=m,
+        foot_body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+        knee_isaac_indices=(knee_isaac_L, knee_isaac_R),
+        window=6,
+    )
+
     # ---- Control loop ---------------------------------------------------
     target_dof_pos_mj = q_default_mj.copy()
     counter = 0
@@ -581,6 +677,12 @@ def main():
 
             mujoco.mj_step(m, d)
             counter += 1
+
+            # Update foot metrics EVERY physics step (contact events happen at
+            # sim_dt=0.005 granularity — sampling only at policy tick would miss
+            # short touchdowns).
+            q_isaac_now = d.qpos[7:][isaac_to_mj]
+            foot_metrics.update(m, d, q_isaac_now)
 
             # NaN guard — gotcha #6 prevents this in normal operation but keep
             # the safety net so we fail loudly instead of producing junk.
@@ -664,6 +766,10 @@ def main():
                         f"[deploy]     ank_pit  L={q_isaac[8]:+.3f} R={q_isaac[9]:+.3f}  "
                         f"ank_roll L={q_isaac[10]:+.3f} R={q_isaac[11]:+.3f}"
                     )
+                    # Per-foot air-time and knee swing amplitude diagnostics —
+                    # rolling mean of the last ~6 completed swing cycles per foot.
+                    # asym% is (L - R) / (L + R) * 100 — positive means LEFT larger.
+                    print(f"[deploy]     {foot_metrics.summary()}")
 
             # Render every Nth physics step instead of every step. Skipping
             # 3 of every 4 viewer.sync() calls is the cheapest path to higher

@@ -82,12 +82,17 @@ class TahitiC1VelocityObservationsCfg:
 
     @configclass
     class PolicyCfg(ObsGroup):
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
+        # Obs noise bumped 2026-07-17 to close the sim-to-real gap. Real robot
+        # showed 2-3x more jitter than mujoco even on the smoother V3 policy —
+        # noisier training obs should teach the policy to filter noise itself.
+        # base_ang_vel  ±0.2 → ±0.3  rad/s   (real IMU under vibration)
+        # joint_pos     ±0.01 → ±0.025 rad   (encoder + backlash under load)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.3, n_max=0.3))
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.025, n_max=0.025))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
         actions = ObsTerm(func=mdp.last_action)
 
@@ -175,9 +180,12 @@ class TahitiC1VelocityRewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
         },
     )
+    # Bumped -2.0 → -4.0 (2026-07-17): mujoco V3@10k showed rolling air-time
+    # asym still 6-10% (LEFT longer forward, RIGHT longer backward — signature
+    # of undertrained gait). Double the penalty on the variance signal.
     feet_airtime_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        weight=-2.0,
+        weight=-4.0,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     foot_clearance = RewTerm(
@@ -226,7 +234,10 @@ class TahitiC1VelocityRewardsCfg:
     # ---- stability -----------------------------------------------------
     lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.08)
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
+    # Bumped -2.0 → -4.0 (2026-07-17): real robot shows pelvis pitching
+    # forward/backward during walk despite low sim flat_orientation_l2 raw
+    # value (~0.006). Doubling the pressure attacks the lean directly.
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-3.5)
     # Below-target base height only — free to stand tall. 0.85 m is 5 cm below
     # the settled ~0.90 m stance height, so normal walking pays 0, only real
     # crouching or falling registers.
@@ -282,9 +293,13 @@ class TahitiC1VelocityRewardsCfg:
     #         ),
     #     },
     # )
+    # Bumped -0.7 → -1.5 (2026-07-17): direct arc-walk attack. mujoco V3@10k
+    # showed hip_roll raw 0.074 (~2° per side) — real amplifies to ~5° drift
+    # which steers the walk. Stronger penalty forces near-zero hip_roll in
+    # both stance and swing.
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.7,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_roll_joint$"])},
     )
     joint_deviation_ankle_roll = RewTerm(
@@ -409,7 +424,7 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.base_com.params["com_range"] = {
             "x": (-0.04, 0.04),
             "y": (-0.04, 0.04),
-            "z": (-0.01, 0.01),
+            "z": (-0.02, 0.02),
         }
 
         # First-training: NO persistent world-frame wrench on the base. This
@@ -430,7 +445,7 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
 
         # Ground friction: static 0.5-1.0, dynamic 0.4-0.9. Narrower than
         # HV1.2's 0.4-1.2 / 0.3-1.0 for a milder first run.
-        self.events.physics_material.params["static_friction_range"] = (0.5, 1.0)
+        self.events.physics_material.params["static_friction_range"] = (0.4, 1.0)
         self.events.physics_material.params["dynamic_friction_range"] = (0.4, 0.9)
 
         # Spawn at exactly the default joint pose (no random scale) so all envs
@@ -453,8 +468,12 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # heel-loaded backward-recovery skill that was capping around -0.3 m/s.
         # Interval tightened 12-15 s → 7-10 s so pushes are more frequent per
         # episode, more gradient signal per iteration.
+        # Push amplitude bumped ±0.8 → ±1.2 m/s (2026-07-17) to build stronger
+        # balance recovery. Real robot loses stability under normal walking
+        # loads that mujoco doesn't reproduce — larger sim pushes force the
+        # policy to reserve more corrective authority.
         self.events.push_robot.interval_range_s = (7.0, 10.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-0.8, 0.8), "y": (-0.8, 0.8)}}
+        self.events.push_robot.params = {"velocity_range": {"x": (-1.2, 1.2), "y": (-1.0, 1.0)}}
 
         # ---------------- terminations: base_link contact only ---------------
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base_link"
@@ -475,7 +494,7 @@ class TahitiC1VelocityFlatEnvCfg_PLAY(TahitiC1VelocityFlatEnvCfg):
         self.observations.policy.enable_corruption = False
         # Push robot during play for visual push-recovery inspection.
         self.events.push_robot.interval_range_s = (6.0, 8.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}
+        self.events.push_robot.params = {"velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)}}
         # Disable curriculum in play (common_step_counter starts at 0, would
         # force Phase 1 and overwrite the play ranges).
         self.curriculum.command_phase = None

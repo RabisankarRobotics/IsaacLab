@@ -189,10 +189,16 @@ def set_default_pose(
 # ---------------------------------------------------------------------------
 
 class HV1_2ObsBuilder:
-    """Builds the 83-d single-frame observation for HV1.2 velocity policy.
+    """Builds the single-frame observation for the Tahiti C1 velocity policy,
+    optionally wrapped in a per-term rolling history for history_length > 1.
 
-    Order matches HV1_2VelocityObservationsCfg.PolicyCfg declaration order:
+    Order matches Isaac Lab's PolicyCfg declaration order:
       base_ang_vel, projected_gravity, velocity_commands, joint_pos, joint_vel, actions.
+
+    Flatten layout when history_length > 1 (matches Isaac Lab
+    ``concatenate_terms=True`` and robo_control's ObservationHistory.flatten):
+        [term0_oldest, term0_oldest+1, ..., term0_newest,
+         term1_oldest, ..., term1_newest, ...]
     """
 
     def __init__(
@@ -203,6 +209,7 @@ class HV1_2ObsBuilder:
         q_default_isaac: np.ndarray,
         action_dim: int,
         obs_term_order: List[str],
+        history_length: int = 1,
     ):
         self.m = m
         self.d = d
@@ -211,6 +218,7 @@ class HV1_2ObsBuilder:
         self.obs_term_order = obs_term_order
         self.last_action = np.zeros(action_dim, dtype=np.float32)
         self.vel_cmd = np.zeros(3, dtype=np.float32)
+        self.history_length = int(history_length)
 
         # Dispatch table for term name → compute function. base_lin_vel
         # intentionally absent: the policy was trained without it (no state
@@ -226,6 +234,10 @@ class HV1_2ObsBuilder:
         missing = [t for t in obs_term_order if t not in self._term_fns]
         if missing:
             raise RuntimeError(f"No compute function for obs terms: {missing}")
+
+        # Per-term rolling buffers for history. First push seeds the buffer
+        # with H copies of the first observation.
+        self._history: dict[str, list[np.ndarray]] = {t: [] for t in obs_term_order}
 
     def _base_ang_vel(self) -> np.ndarray:
         # qvel[3:6] for free joint = body-frame angular velocity in MuJoCo. (gotcha #2)
@@ -253,9 +265,24 @@ class HV1_2ObsBuilder:
         return self.last_action
 
     def step(self) -> np.ndarray:
+        # Compute current single-frame values per term, push into history,
+        # flatten with the Isaac Lab per-term layout.
+        for name in self.obs_term_order:
+            current = self._term_fns[name]().astype(np.float32)
+            buf = self._history[name]
+            if not buf:
+                # Seed with H copies of the first observation.
+                for _ in range(self.history_length):
+                    buf.append(current.copy())
+            else:
+                buf.append(current)
+                if len(buf) > self.history_length:
+                    buf.pop(0)
+
         parts: List[np.ndarray] = []
         for name in self.obs_term_order:
-            parts.append(self._term_fns[name]().astype(np.float32))
+            for frame in self._history[name]:
+                parts.append(frame)
         return np.concatenate(parts, axis=0).astype(np.float32)
 
 
@@ -362,11 +389,17 @@ def main():
     # NOT subtracted from the Python PD kd. The double-count this introduces
     # is small (~2% of leg kd) and consistent with how the real motor behaves
     # (passive viscous + active controller damping coexist).
-    action_scale = float(cfg["action"]["scale"])
+    # action_scale can be a scalar (uniform) or a list (per action-order joint).
+    action_scale_raw = cfg["action"]["scale"]
+    if isinstance(action_scale_raw, (list, tuple)):
+        action_scale = np.asarray(action_scale_raw, dtype=np.float32)
+    else:
+        action_scale = float(action_scale_raw)
     use_default_offset = bool(cfg["action"]["use_default_offset"])
     n_dof = int(cfg["robot"]["num_dof_total"])
     action_dim = int(cfg["action"]["dim"])
     total_obs_dim_yaml = int(cfg["observation"]["total_dim"])
+    obs_history_length = int(cfg["observation"].get("history_length", 1))
     obs_terms_yaml = cfg["observation"]["terms"]
     obs_term_order = [entry["name"] for entry in obs_terms_yaml]
 
@@ -457,6 +490,7 @@ def main():
         q_default_isaac=q_default_isaac,
         action_dim=action_dim,
         obs_term_order=obs_term_order,
+        history_length=obs_history_length,
     )
     obs_builder.vel_cmd = np.array(
         [args.cmd_lin_x, args.cmd_lin_y, args.cmd_ang_z], dtype=np.float32
@@ -568,14 +602,17 @@ def main():
                 obs_builder.last_action = action.copy()
 
                 # Build PD target in Isaac order: keep all non-action joints at
-                # their default; override the action subset.
+                # their default; override the action subset. action_scale may
+                # be a scalar (uniform) or a per-action-joint array (length
+                # action_dim, indexed by action order); numpy handles both.
                 target_dof_pos_isaac = q_default_isaac.copy()
+                scaled = action_scale * action
                 if use_default_offset:
                     target_dof_pos_isaac[action_to_isaac] = (
-                        q_default_isaac[action_to_isaac] + action_scale * action
+                        q_default_isaac[action_to_isaac] + scaled
                     )
                 else:
-                    target_dof_pos_isaac[action_to_isaac] = action_scale * action
+                    target_dof_pos_isaac[action_to_isaac] = scaled
                 target_dof_pos_mj = target_dof_pos_isaac[mj_to_isaac]
 
                 # Heartbeat — once per second at 50 Hz policy.
@@ -607,6 +644,25 @@ def main():
                         f"wz={d.qvel[5]:+.2f}]  "
                         f"base_z={d.qpos[2]:.3f}  "
                         f"|tau|={np.abs(tau).max():.1f}"
+                    )
+                    # Diagnostic joint printout — Isaac BFS order:
+                    #   [0]L_hy [1]R_hy [2]L_hp [3]R_hp [4]L_hr [5]R_hr
+                    #   [6]L_kn [7]R_kn [8]L_ap [9]R_ap [10]L_ar [11]R_ar
+                    # For symmetric forward walk, L/R pairs should mirror in sign
+                    # for hip_yaw and hip_roll (both near 0), match closely for
+                    # hip_pitch/knee/ankle_pitch (they're symmetric in default pose).
+                    q_isaac = q_mj[isaac_to_mj]
+                    print(
+                        f"[deploy]     hip_yaw  L={q_isaac[0]:+.3f} R={q_isaac[1]:+.3f}  "
+                        f"hip_roll L={q_isaac[4]:+.3f} R={q_isaac[5]:+.3f}"
+                    )
+                    print(
+                        f"[deploy]     hip_pit  L={q_isaac[2]:+.3f} R={q_isaac[3]:+.3f}  "
+                        f"knee     L={q_isaac[6]:+.3f} R={q_isaac[7]:+.3f}"
+                    )
+                    print(
+                        f"[deploy]     ank_pit  L={q_isaac[8]:+.3f} R={q_isaac[9]:+.3f}  "
+                        f"ank_roll L={q_isaac[10]:+.3f} R={q_isaac[11]:+.3f}"
                     )
 
             # Render every Nth physics step instead of every step. Skipping

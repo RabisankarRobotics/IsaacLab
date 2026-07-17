@@ -10,8 +10,12 @@ Total 12 actuated joints (6 per leg). Base link is ``base_link`` (no separate
 pelvis). No arms / no upper body — this is a locomotion-only platform.
 
 Motor spec supplied by the user:
-    X12-320  → ``.*hip.*`` and ``.*knee.*``  (8 joints)  85 Nm, Kp 250, Kd 15
-    X6-60    → ``.*ankle.*``                 (4 joints)  20 Nm, Kp 200, Kd 25
+    X12-320  → ``.*hip.*`` and ``.*knee.*``  (8 joints)  85 Nm, Kp 250, Kd 25
+    X6-60    → ``.*ankle.*``                 (4 joints)  20 Nm, Kp 200, Kd 20
+
+    Kd values updated 2026-07-17 to match the robo_control deploy base yaml
+    (hips/knees kd=25, ankles kd=20 — inverted vs earlier training). Match
+    is required for sim-to-real parity.
 
 Actuators default to :class:`DelayedPDActuatorCfg` (0-6 physics-step command
 lag, ~30 ms at sim_dt=0.005 — the sim-to-real target). If early training gets
@@ -52,12 +56,12 @@ TAHITI_C1_CFG = ArticulationCfg(
                     ".*_ankle_roll_joint": 200.0,
                 },
                 damping={
-                    ".*_hip_yaw_joint": 15.0,
-                    ".*_hip_pitch_joint": 15.0,
-                    ".*_hip_roll_joint": 15.0,
-                    ".*_knee_joint": 15.0,
-                    ".*_ankle_pitch_joint": 25.0,
-                    ".*_ankle_roll_joint": 25.0,
+                    ".*_hip_yaw_joint": 25.0,
+                    ".*_hip_pitch_joint": 25.0,
+                    ".*_hip_roll_joint": 25.0,
+                    ".*_knee_joint": 25.0,
+                    ".*_ankle_pitch_joint": 20.0,
+                    ".*_ankle_roll_joint": 20.0,
                 },
             ),
         ),
@@ -77,20 +81,22 @@ TAHITI_C1_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        # Straight-leg height ≈ 0.913 m base_link origin above ground. With
-        # the bent-knee default below the settled height drops ~1.3 cm to
-        # ~0.90 m. Spawn a few cm above (0.92 m) so the robot settles into
-        # stance cleanly at t=0.
-        pos=(0.0, 0.0, 0.92),
+        # Default pose updated 2026-07-17 to match the robo_control deploy base
+        # yaml (hip_pitch=-0.10, knee=0.30, ankle_pitch=+0.20). Less-bent knee
+        # + more-upright hip raises the settled height by ~1-2 cm vs the earlier
+        # 0.36/-0.16 pose, so spawn bumped 0.92 → 0.95 m to keep the "settle-in
+        # from above" behavior at t=0.
+        # NOTE ankle_pitch SIGN FLIPPED from -0.20 to +0.20. Verify in Play
+        # viewer that the foot is flat (not heel-tilted with toe raised). If
+        # heel-tilted, the deploy encoder sign is opposite the URDF axis and a
+        # sign inversion must be added in the deploy path.
+        pos=(0.0, 0.0, 0.95),
         joint_pos={
             ".*_hip_yaw_joint": 0.0,
-            ".*_hip_pitch_joint": -0.16,
+            ".*_hip_pitch_joint": -0.10,
             ".*_hip_roll_joint": 0.0,
-            # Knee limit is [0, 2.1817] — positive-only extension. 0.36 is a
-            # comfortable stance bend consistent with hip_pitch=-0.16 and
-            # ankle_pitch=-0.2 (foot stays flat on the ground).
-            ".*_knee_joint": 0.36,
-            ".*_ankle_pitch_joint": -0.2,
+            ".*_knee_joint": 0.30,
+            ".*_ankle_pitch_joint": 0.20,
             ".*_ankle_roll_joint": 0.0,
         },
         joint_vel={".*": 0.0},
@@ -103,7 +109,7 @@ TAHITI_C1_CFG = ArticulationCfg(
             effort_limit=85.0,
             velocity_limit=10.0,
             stiffness=250.0,
-            damping=15.0,
+            damping=25.0,
             armature=0.326938,
             friction=1.694307,
             viscous_friction=0.350134,
@@ -116,7 +122,7 @@ TAHITI_C1_CFG = ArticulationCfg(
             effort_limit=20.0,
             velocity_limit=16.0,
             stiffness=200.0,
-            damping=25.0,
+            damping=20.0,
             armature=0.019603,
             friction=0.321816,
             viscous_friction=0.165640,

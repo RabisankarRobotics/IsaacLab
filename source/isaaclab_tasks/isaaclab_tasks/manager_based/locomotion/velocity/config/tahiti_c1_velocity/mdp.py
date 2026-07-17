@@ -166,6 +166,52 @@ def feet_lateral_distance_clearance(
     return torch.clamp(min_distance - lateral_distance, min=0.0)
 
 
+def feet_stance_flat_ankle(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    force_threshold: float = 5.0,
+) -> torch.Tensor:
+    """Per-foot L1 ankle_pitch deviation from default, gated to feet in contact.
+
+    Encourages foot-flat stance. Kills the toe-up / heel-only pathology.
+    sensor_cfg.body_ids must resolve to the 2 foot contact bodies (L, R);
+    asset_cfg.joint_ids to the 2 ankle_pitch joints in the SAME order.
+    Use with NEGATIVE weight.
+    """
+    from isaaclab.sensors import ContactSensor
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_forces = sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    contact_mag = torch.max(torch.norm(contact_forces, dim=-1), dim=1)[0]
+    in_contact = (contact_mag > force_threshold).float()
+
+    ankle_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    ankle_default = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    deviation = torch.abs(ankle_pos - ankle_default)
+    return torch.sum(deviation * in_contact, dim=1)
+
+
+def leg_symmetry_l1(
+    env: "ManagerBasedRLEnv",
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """L1 penalty on left/right joint-position asymmetry.
+
+    Reads asset_cfg.joint_ids interleaved as (L, R, L, R, ...) and penalizes
+    |L - R| per pair. Fights persistent left-dominance across gait cycles.
+    Instantaneous — will oppose normal swing asymmetry, so use SMALL weight.
+    Requires preserve_order=True on the SceneEntityCfg.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    n_pairs = joint_pos.shape[1] // 2
+    pairs = joint_pos.view(joint_pos.shape[0], n_pairs, 2)
+    diff = torch.abs(pairs[..., 0] - pairs[..., 1])
+    return diff.sum(dim=1)
+
+
 def stand_to_walk_command_curriculum(
     env: "ManagerBasedRLEnv",
     env_ids,

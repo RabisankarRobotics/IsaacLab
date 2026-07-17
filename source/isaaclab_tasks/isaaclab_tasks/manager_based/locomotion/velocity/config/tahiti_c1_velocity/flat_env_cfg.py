@@ -48,17 +48,19 @@ LEG_JOINTS = [
 class TahitiC1VelocityActionsCfg:
     """Policy actions on all 12 leg joints.
 
-    Scale 0.25 for a conservative first training. Smaller than the 0.5 that
-    HV1.2 uses because Tahiti C1 is ~40 % lighter and has no arm inertia — a
-    given raw action produces a bigger joint displacement, so we shrink the
-    mapping to keep the initial swing smooth. Once a clean gait is converged,
-    can bump to 0.5 in a second-stage refinement run.
+    Per-joint scale (2026-07-17) to match robo_control deploy base yaml:
+      ankle_roll (L, R): 0.10  — reduced authority damps ankle-roll vibration
+      all other joints:  0.25
+    Any change here must be mirrored in deploy/config/policy.yaml.
     """
 
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=LEG_JOINTS,
-        scale=0.25,
+        scale={
+            ".*_ankle_roll_joint": 0.10,
+            ".*": 0.25,
+        },
         use_default_offset=True,
     )
 
@@ -85,6 +87,11 @@ class TahitiC1VelocityObservationsCfg:
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
+            # 5-step obs history (2026-07-17). Matches robo_control deploy base
+            # yaml. Gives the policy temporal context so noisy single-step obs
+            # averages out — main smoothness lever for sim-to-real. Obs dim per
+            # step = 45; total policy input = 45 × 5 = 225.
+            self.history_length = 5
 
     policy: PolicyCfg = PolicyCfg()
 
@@ -184,10 +191,10 @@ class TahitiC1VelocityRewardsCfg:
         func=custom_mdp.knee_too_straight_penalty,
         weight=-0.5,
         params={
-            # 0.35 rad is just under the 0.36 default — swing-phase knees
-            # (>= 0.7 rad) pay 0, stance-phase knees at rest pay ~0, only
-            # actively locked-straight knees (stilt walk) pay meaningful cost.
-            "threshold": 0.35,
+            # 0.29 rad is just under the 0.30 default (updated 2026-07-17) —
+            # swing-phase knees (>= 0.7 rad) pay 0, stance knees at rest pay
+            # ~0, only actively locked-straight knees pay meaningful cost.
+            "threshold": 0.29,
             "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_knee_joint$"]),
         },
     )
@@ -198,10 +205,14 @@ class TahitiC1VelocityRewardsCfg:
     # cheat gaits, not an active shaper.
     feet_lateral_clearance = RewTerm(
         func=custom_mdp.feet_lateral_distance_clearance,
-        weight=-5.0,
+        weight=-8.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "min_distance": 0.22,
+            # Bumped 2026-07-17: 0.22 → 0.26 m demanded lateral separation, and
+            # weight -5 → -8 for sharper penalty. Feet-crossing was the visible
+            # corner-walk symptom in MuJoCo Test B — widen the natural stance
+            # so the two feet cannot pass under the base.
+            "min_distance": 0.26,
         },
     )
 
@@ -266,7 +277,7 @@ class TahitiC1VelocityRewardsCfg:
     # )
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.3,
+        weight=-0.7,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_roll_joint$"])},
     )
     joint_deviation_ankle_roll = RewTerm(
@@ -274,6 +285,29 @@ class TahitiC1VelocityRewardsCfg:
         weight=-0.5,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_ankle_roll_joint$"])},
     )
+
+    # ---- foot-flat stance (kills toe-up bias / heel-only pathology) ----
+    # Gated to feet-in-contact. When a foot is in contact, its ankle_pitch
+    # should sit at the default (+0.20 in the new pose = flat foot). Any
+    # deviation (toe pumped higher or lower) pays L1 cost.
+    feet_stance_flat_ankle = RewTerm(
+        func=custom_mdp.feet_stance_flat_ankle,
+        weight=-1.0,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["left_ankle_roll_link", "right_ankle_roll_link"],
+                preserve_order=True,
+            ),
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["left_ankle_pitch_joint", "right_ankle_pitch_joint"],
+                preserve_order=True,
+            ),
+            "force_threshold": 5.0,
+        },
+    )
+
 
     # ---- standstill freeze --------------------------------------------
     # "Do not deviate any joint when the operator is not commanding motion."

@@ -190,14 +190,15 @@ class TahitiC1VelocityRewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
         },
     )
-    # 2026-07-18: -4.0 → -3.0. V3@30k showed action_std rising 0.56 → 0.80 and
-    # tracking regressing — Bundle B over-penalized. Pulled 25 % back so the
-    # variance signal still shapes but doesn't dominate PPO's advantage. Real
-    # fix for L/R asym is per-joint DR spread (widened separately), not more
-    # penalty here.
+    # 2026-07-18 Round HW: -3.0 → -5.0. V4@20k showed limping walk (one leg
+    # dominant swing) which is exactly what variance measures. Earlier -4.0
+    # bump caused thrashing because dof_acc/action_rate were also at max —
+    # now that those are relaxed, the variance penalty can drive symmetry
+    # without forcing a policy collapse. Attacks the L/R rolling-window gap
+    # at cycle scale, not instantaneous.
     feet_airtime_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        weight=-3.0,
+        weight=-5.0,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     foot_clearance = RewTerm(
@@ -205,11 +206,13 @@ class TahitiC1VelocityRewardsCfg:
         weight=0.3,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            # 0.13 m → larger clearance than HV1.2's 0.07 m. Tahiti C1's ankle
-            # roll link sits ~1.3 cm below its origin, so this yields ~8-9 cm of
-            # visible foot lift above the ground during swing — the "realistic
-            # knee swing" gait.
-            "target_height": 0.13,
+            # 2026-07-18 Round HW: 0.13 → 0.08 m. Real human midswing foot
+            # clearance is 5-8 cm — 13 cm was march-height, letting the
+            # policy satisfy the reward with pure vertical knee-lift and
+            # zero forward reach. 8 cm forces the swing energy into the
+            # forward direction (via hip pitch) instead of upward, which is
+            # what human walking actually looks like.
+            "target_height": 0.08,
             "std": 0.05,
             "tanh_mult": 2.0,
         },
@@ -218,10 +221,14 @@ class TahitiC1VelocityRewardsCfg:
         func=custom_mdp.knee_too_straight_penalty,
         weight=-0.5,
         params={
-            # 0.29 rad is just under the 0.30 default (updated 2026-07-17) —
-            # swing-phase knees (>= 0.7 rad) pay 0, stance knees at rest pay
-            # ~0, only actively locked-straight knees pay meaningful cost.
-            "threshold": 0.29,
+            # 2026-07-18 Round HW: 0.29 → 0.10 rad. THE key lever for human-
+            # like walk. At 0.29 rad (17°) the penalty fired every time either
+            # knee tried to extend during late swing, forcing the parade-
+            # marching gait the user saw in V4. Real human late-swing extends
+            # the knee to ~0.05-0.15 rad (heel-strike-ready). New threshold
+            # 0.10 rad (~6°) means only truly hyperextended knees pay,
+            # allowing the late-swing reach that produces a real stride.
+            "threshold": 0.10,
             "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_knee_joint$"]),
         },
     )
@@ -261,14 +268,16 @@ class TahitiC1VelocityRewardsCfg:
     )
 
     # ---- effort / smoothness ------------------------------------------
-    # Bumped 2026-07-16 to shape a smoother gait — real deploy amplifies any
-    # jitter seen in sim, and the policy also slams feet on touchdown. Both
-    # symptoms have the same fix (smoother action → smoother joint acc →
-    # softer footfall). dof_acc 2.5e-7 → 4e-7 (60%), action_rate 0.01 → 0.015
-    # (50%). Combined delta ≈ -0.25 mean reward. Small enough to stay safely
-    # inside sum-of-deltas tolerance on hot resume.
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-4.0e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.015)
+    # 2026-07-18 Round HW: dof_acc -4e-7 → -2.5e-7, action_rate -0.015 → -0.010.
+    # V4@20k failed under Bundle B's smoothness + ±1.5 push combo — action_std
+    # rose to 1.11, base_contact 35.9 %, action_rate raw 32.7. The math was
+    # contradictory: policy needed big joint accel to catch pushes, penalty
+    # said "don't." Reverting to pre-Bundle B values restores recovery
+    # authority. Combined with new push cap (±1.0 x / ±0.8 y) and human-walk
+    # reward shape (knee_too_straight 0.29 → 0.10, foot_clearance 0.13 → 0.08),
+    # this is the anti-parade / anti-limp / recovery-safe stack.
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.010)
 
     # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
@@ -315,9 +324,14 @@ class TahitiC1VelocityRewardsCfg:
         weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_hip_roll_joint$"])},
     )
+    # 2026-07-18 Round HW: -0.5 → -0.8. User observed ankle_roll still tilting
+    # (foot not flat with ground) in V4 mujoco. feet_stance_flat_ankle only
+    # covers ankle_pitch — this is the roll-axis equivalent, applied globally.
+    # Modest bump so the penalty is visible without stopping the roll motion
+    # needed for push recovery.
     joint_deviation_ankle_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.5,
+        weight=-0.8,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_ankle_roll_joint$"])},
     )
 
@@ -484,12 +498,14 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # walk fall in MuJoCo. A -0.8 m/s x-push is mechanically identical to
         # walking backward at 0.8 m/s — every pushed episode drills the exact
         # heel-loaded backward-recovery skill that was capping around -0.3 m/s.
-        # 2026-07-18: interval 7-10 → 5-8 s (more push events per episode) and
-        # x amplitude 1.2 → 1.5 m/s. User reported "cannot see any push
-        # applied" in Isaac PLAY on the V3@30k policy — smaller kicks were
-        # being absorbed too easily. Widened here to leave a visible reaction.
+        # 2026-07-18 Round HW: interval 5-8 s kept, but amplitude x ±1.5 → ±1.0
+        # and y ±1.2 → ±0.8. V4@20k proved ±1.5 was gymnastic-level — the
+        # policy either had to give up smoothness (thrashing seen at iter 18k)
+        # or fall (base_contact 35.9 %). Real robot never sees ±1.5 m/s kicks;
+        # ±1.0 covers the realistic disturbance envelope while leaving budget
+        # for the smoothness penalties to shape the gait.
         self.events.push_robot.interval_range_s = (5.0, 8.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-1.5, 1.5), "y": (-1.2, 1.2)}}
+        self.events.push_robot.params = {"velocity_range": {"x": (-1.0, 1.0), "y": (-0.8, 0.8)}}
 
         # ---------------- terminations: base_link contact only ---------------
         self.terminations.base_contact.params["sensor_cfg"].body_names = "base_link"

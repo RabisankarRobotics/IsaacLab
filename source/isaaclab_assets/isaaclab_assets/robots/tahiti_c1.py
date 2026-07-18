@@ -101,7 +101,12 @@ TAHITI_C1_CFG = ArticulationCfg(
         },
         joint_vel={".*": 0.0},
     ),
-    soft_joint_pos_limit_factor=0.9,
+    # 2026-07-18: 0.9 → 0.85. mujoco V3@30k showed policy pinning ankle_roll
+    # at ±0.194 (= 0.9 × ±0.216 hardware limit) every stance phase → structural
+    # L/R asymmetry from L/R hardware DR spread at the wall. Moving the soft
+    # limit inward to 0.85 pushes dof_pos_limits penalty earlier so the policy
+    # stops using the limit as a stability crutch.
+    soft_joint_pos_limit_factor=0.85,
     actuators={
         # X12-320 group: 3 hip joints + knee, per leg × 2 = 8 joints.
         "legs_x12_320": DelayedPDActuatorCfg(

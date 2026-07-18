@@ -95,7 +95,7 @@ class TahitiC1VelocityObservationsCfg:
             func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.05, n_max=0.05))
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.03, n_max=0.03))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
         actions = ObsTerm(func=mdp.last_action)
 
@@ -134,8 +134,8 @@ class TahitiC1VelocityEventCfg(EventCfg):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "stiffness_distribution_params": (0.90, 1.10),
-            "damping_distribution_params": (0.90, 1.10),
+            "stiffness_distribution_params": (0.95, 1.05),
+            "damping_distribution_params": (0.95, 1.05),
             "operation": "scale",
             "distribution": "uniform",
         },
@@ -145,8 +145,8 @@ class TahitiC1VelocityEventCfg(EventCfg):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "friction_distribution_params": (0.90, 1.10),
-            "armature_distribution_params": (0.90, 1.10),
+            "friction_distribution_params": (0.95, 1.05),
+            "armature_distribution_params": (0.95, 1.05),
             "operation": "scale",
             "distribution": "uniform",
         },

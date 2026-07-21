@@ -174,16 +174,16 @@ class TahitiC1VelocityRewardsCfg:
     )
 
     # ---- gait shaping (realistic knee swing) --------------------------
-    # 2026-07-21: weight 3.0 → 1.5. Prior 3.0 bump unlocked bigger swings
-    # (log reward 0.045 → 0.35) but policy over-invested in vertical lift:
-    # MuJoCo diagnostic showed peak GRF 5-6× BW (destructive on real X6-60
-    # ankle motors — 3× effort limit) and velocity tracking dropped to
-    # ~40% of command. Halving keeps stride pressure without dominating.
-    # Threshold 0.5 s stays — it's a cap, not a firing point; current
-    # air_times sit below it so lowering does nothing at current scale.
+    # 2026-07-21 Round Big-Stride Part 3: 1.5 → 2.0. Prior 1.5 got MuJoCo
+    # air_times only to 0.15-0.18s (log reward 0.069, threshold cap 0.5s so
+    # lots of headroom). The reason we halved from 3.0 was over-vertical
+    # stomping, but now foot_contact_force (700 N cap, weight -1e-3) puts
+    # a real ceiling on vertical push. With that ceiling in place, air_time
+    # weight can climb again without producing 5× BW landings — the two
+    # rewards constrain different axes (temporal vs force).
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=1.5,
+        weight=2.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
@@ -300,19 +300,21 @@ class TahitiC1VelocityRewardsCfg:
             ),
         },
     )
-    # 2026-07-21: hardware-protective GRF cap. MuJoCo diagnostic on the prior
-    # policy showed peak per-foot force 5-6× BW (2900-3100 N). Real X6-60
-    # ankle motor limit is 20 Nm ≈ 1000 N through 0.02 m moment arm — the
-    # observed peaks would trip / burn out ankles on real hardware. Threshold
-    # 1000 N ≈ 1.9× BW leaves healthy walking landings (< 800 N) unpenalized
-    # and only catches destructive spikes. Small weight (-5e-4) so it doesn't
-    # dominate — at 3000 N a landing pays -1.0, plenty of gradient to soften.
+    # 2026-07-21 Round Big-Stride Part 3: prior threshold 1000 N + weight -5e-4
+    # produced almost zero gradient in Isaac (log reward -0.029 → avg per-step
+    # violation ~0.06 N). Isaac's soft contact model reports much lower peaks
+    # than MuJoCo's rigid contact — MuJoCo still showed 3.5-4× BW peaks after
+    # the previous edit. Lower threshold 1000 → 700 N so the penalty actually
+    # fires in Isaac, and 2× the weight for real pressure.
+    # Safety check: static two-foot stance = 262 N/foot (safe, 60% headroom).
+    # Static single-foot support = 525 N (safe, 25% headroom). Only walking
+    # peaks (800+ N) and landings (1000+ N) pay.
     foot_contact_force = RewTerm(
         func=mdp.contact_forces,
-        weight=-5.0e-4,
+        weight=-1.0e-3,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 1000.0,
+            "threshold": 700.0,
         },
     )
 

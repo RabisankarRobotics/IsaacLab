@@ -158,27 +158,35 @@ class TahitiC1VelocityRewardsCfg:
     """Velocity-tracking rewards shaped for realistic bent-knee walking."""
 
     # ---- tracking ------------------------------------------------------
+    # 2026-07-21 Round Big-Stride: std 0.5 → 0.25 (peakier reward → stronger
+    # gradient to close velocity error). weight 1.5 → 2.0 on xy tracking to
+    # counter the mild tracking drop after air_time weight jumped 1.0 → 3.0
+    # (V4@20k: error_vel_xy 0.527 → 0.585). Yaw kept at weight 1.5.
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.5,
-        params={"command_name": "base_velocity", "std": 0.5},
+        weight=2.0,
+        params={"command_name": "base_velocity", "std": 0.25},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
         weight=1.5,
-        params={"command_name": "base_velocity", "std": 0.5},
+        params={"command_name": "base_velocity", "std": 0.25},
     )
 
     # ---- gait shaping (realistic knee swing) --------------------------
+    # 2026-07-21: weight 3.0 → 1.5. Prior 3.0 bump unlocked bigger swings
+    # (log reward 0.045 → 0.35) but policy over-invested in vertical lift:
+    # MuJoCo diagnostic showed peak GRF 5-6× BW (destructive on real X6-60
+    # ankle motors — 3× effort limit) and velocity tracking dropped to
+    # ~40% of command. Halving keeps stride pressure without dominating.
+    # Threshold 0.5 s stays — it's a cap, not a firing point; current
+    # air_times sit below it so lowering does nothing at current scale.
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=3.0,
+        weight=1.5,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            # 0.4 s → longer swing than HV1.2's 0.3 s. Tahiti C1 is lighter and
-            # this gives visibly bigger knee swing / cleaner stride at the cost
-            # of a slower cadence — matches the "realistic knee swing" ask.
             "threshold": 0.5,
         },
     )
@@ -290,6 +298,21 @@ class TahitiC1VelocityRewardsCfg:
                 "robot",
                 joint_names=[".*_ankle_(pitch|roll)_joint$", ".*_hip_yaw_joint$"],
             ),
+        },
+    )
+    # 2026-07-21: hardware-protective GRF cap. MuJoCo diagnostic on the prior
+    # policy showed peak per-foot force 5-6× BW (2900-3100 N). Real X6-60
+    # ankle motor limit is 20 Nm ≈ 1000 N through 0.02 m moment arm — the
+    # observed peaks would trip / burn out ankles on real hardware. Threshold
+    # 1000 N ≈ 1.9× BW leaves healthy walking landings (< 800 N) unpenalized
+    # and only catches destructive spikes. Small weight (-5e-4) so it doesn't
+    # dominate — at 3000 N a landing pays -1.0, plenty of gradient to soften.
+    foot_contact_force = RewTerm(
+        func=mdp.contact_forces,
+        weight=-5.0e-4,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "threshold": 1000.0,
         },
     )
 

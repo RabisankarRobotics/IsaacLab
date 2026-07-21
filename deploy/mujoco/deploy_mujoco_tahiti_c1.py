@@ -124,6 +124,11 @@ class FootMetrics:
         self.swing_min_knee = [1e9, 1e9]
         self.swing_max_knee = [-1e9, -1e9]
         self.knee_amplitudes = [[], []]
+        # 2026-07-21: per-foot contact force diagnostic. peak_force is the
+        # all-time max normal force per foot; contact_force_samples is a
+        # rolling per-step buffer for mean force during stance.
+        self.peak_force = [0.0, 0.0]
+        self.contact_force_samples = [[], []]
 
     @staticmethod
     def _push(buf: List[float], value: float, window: int) -> None:
@@ -133,6 +138,8 @@ class FootMetrics:
 
     def update(self, m: mujoco.MjModel, d: mujoco.MjData, q_isaac: np.ndarray) -> None:
         contact_now = [False, False]
+        step_force = [0.0, 0.0]  # sum of normal contact force per foot this physics step
+        force6 = np.zeros(6)
         for i in range(d.ncon):
             c = d.contact[i]
             b1 = m.geom_bodyid[c.geom1]
@@ -140,6 +147,14 @@ class FootMetrics:
             for foot_idx, bid in enumerate(self.body_ids):
                 if b1 == bid or b2 == bid:
                     contact_now[foot_idx] = True
+                    # Contact-frame force: force6[0] is normal into surface.
+                    mujoco.mj_contactForce(m, d, i, force6)
+                    step_force[foot_idx] += abs(float(force6[0]))
+        for foot_idx in range(2):
+            if step_force[foot_idx] > 0.0:
+                if step_force[foot_idx] > self.peak_force[foot_idx]:
+                    self.peak_force[foot_idx] = step_force[foot_idx]
+                self._push(self.contact_force_samples[foot_idx], step_force[foot_idx], self.window * 20)
 
         for foot_idx in range(2):
             knee_val = float(q_isaac[self.knee_isaac_indices[foot_idx]])
@@ -175,9 +190,18 @@ class FootMetrics:
         nL, nR = len(self.airtimes[0]), len(self.airtimes[1])
         at_asym = (atL - atR) / max(atL + atR, 1e-6) * 100.0  # % of mean
         ka_asym = (kaL - kaR) / max(kaL + kaR, 1e-6) * 100.0
+        # Force diagnostic. body_weight_N = 53.5 kg * 9.81 ≈ 525 N reference.
+        # Healthy human-like walk peaks 1.2-1.5× BW. Stomping 1.8-2.5×. > 2.5× = destructive.
+        fL_peak, fR_peak = self.peak_force[0], self.peak_force[1]
+        fL_mean = _mean(self.contact_force_samples[0])
+        fR_mean = _mean(self.contact_force_samples[1])
+        body_weight_N = 53.5 * 9.81
         return (
             f"air_time  L={atL:.3f}s R={atR:.3f}s  asym={at_asym:+.1f}%  (n={nL}/{nR})  "
-            f"knee_amp  L={kaL:.3f} R={kaR:.3f}  asym={ka_asym:+.1f}%"
+            f"knee_amp  L={kaL:.3f} R={kaR:.3f}  asym={ka_asym:+.1f}%\n"
+            f"force     L peak={fL_peak:.0f}N ({fL_peak/body_weight_N:.2f}xBW) "
+            f"mean={fL_mean:.0f}N   "
+            f"R peak={fR_peak:.0f}N ({fR_peak/body_weight_N:.2f}xBW) mean={fR_mean:.0f}N"
         )
 
 

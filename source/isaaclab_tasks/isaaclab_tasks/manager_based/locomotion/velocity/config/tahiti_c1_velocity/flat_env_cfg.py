@@ -172,14 +172,14 @@ class TahitiC1VelocityRewardsCfg:
     # ---- gait shaping (realistic knee swing) --------------------------
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=1.0,
+        weight=3.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
             # 0.4 s → longer swing than HV1.2's 0.3 s. Tahiti C1 is lighter and
             # this gives visibly bigger knee swing / cleaner stride at the cost
             # of a slower cadence — matches the "realistic knee swing" ask.
-            "threshold": 0.4,
+            "threshold": 0.5,
         },
     )
     feet_slide = RewTerm(
@@ -217,21 +217,21 @@ class TahitiC1VelocityRewardsCfg:
             "tanh_mult": 2.0,
         },
     )
-    knee_too_straight = RewTerm(
-        func=custom_mdp.knee_too_straight_penalty,
-        weight=-0.5,
-        params={
-            # 2026-07-18 Round HW: 0.29 → 0.10 rad. THE key lever for human-
-            # like walk. At 0.29 rad (17°) the penalty fired every time either
-            # knee tried to extend during late swing, forcing the parade-
-            # marching gait the user saw in V4. Real human late-swing extends
-            # the knee to ~0.05-0.15 rad (heel-strike-ready). New threshold
-            # 0.10 rad (~6°) means only truly hyperextended knees pay,
-            # allowing the late-swing reach that produces a real stride.
-            "threshold": 0.10,
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_knee_joint$"]),
-        },
-    )
+    # knee_too_straight = RewTerm(
+    #     func=custom_mdp.knee_too_straight_penalty,
+    #     weight=-0.5,
+    #     params={
+    #         # 2026-07-18 Round HW: 0.29 → 0.10 rad. THE key lever for human-
+    #         # like walk. At 0.29 rad (17°) the penalty fired every time either
+    #         # knee tried to extend during late swing, forcing the parade-
+    #         # marching gait the user saw in V4. Real human late-swing extends
+    #         # the knee to ~0.05-0.15 rad (heel-strike-ready). New threshold
+    #         # 0.10 rad (~6°) means only truly hyperextended knees pay,
+    #         # allowing the late-swing reach that produces a real stride.
+    #         "threshold": 0.10,
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=["^(left|right)_knee_joint$"]),
+    #     },
+    # )
     # Anti-toe-in / anti-foot-crossover. Fires only when the two feet get
     # laterally closer than min_distance in the yaw frame (measures actual
     # geometry, not command). Small weight because the natural stance already
@@ -276,8 +276,8 @@ class TahitiC1VelocityRewardsCfg:
     # authority. Combined with new push cap (±1.0 x / ±0.8 y) and human-walk
     # reward shape (knee_too_straight 0.29 → 0.10, foot_clearance 0.13 → 0.08),
     # this is the anti-parade / anti-limp / recovery-safe stack.
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.010)
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.25e-7)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
 
     # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.05)

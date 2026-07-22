@@ -165,12 +165,12 @@ class TahitiC1VelocityRewardsCfg:
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
         weight=2.0,
-        params={"command_name": "base_velocity", "std": 0.25},
+        params={"command_name": "base_velocity", "std": 0.3},
     )
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=1.5,
-        params={"command_name": "base_velocity", "std": 0.25},
+        weight=2.0,
+        params={"command_name": "base_velocity", "std": 0.3},
     )
 
     # ---- gait shaping (realistic knee swing) --------------------------
@@ -183,11 +183,11 @@ class TahitiC1VelocityRewardsCfg:
     # rewards constrain different axes (temporal vs force).
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=2.0,
+        weight=2.5,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.5,
+            "threshold": 0.4,
         },
     )
     feet_slide = RewTerm(
@@ -211,7 +211,7 @@ class TahitiC1VelocityRewardsCfg:
     )
     foot_clearance = RewTerm(
         func=custom_mdp.foot_clearance_reward,
-        weight=0.3,
+        weight=0.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
             # 2026-07-18 Round HW: 0.13 → 0.08 m. Real human midswing foot
@@ -220,7 +220,7 @@ class TahitiC1VelocityRewardsCfg:
             # zero forward reach. 8 cm forces the swing energy into the
             # forward direction (via hip pitch) instead of upward, which is
             # what human walking actually looks like.
-            "target_height": 0.08,
+            "target_height": 0.09,
             "std": 0.05,
             "tanh_mult": 2.0,
         },
@@ -554,7 +554,7 @@ class TahitiC1VelocityFlatEnvCfg_PLAY(TahitiC1VelocityFlatEnvCfg):
         # kicks are visible in the viewer (user reported "cannot see any push
         # applied" — 1 m/s absorbed too quickly by the policy).
         self.events.push_robot.interval_range_s = (3.0, 5.0)
-        self.events.push_robot.params = {"velocity_range": {"x": (-1.8, 1.8), "y": (-1.5, 1.5)}}
+        self.events.push_robot.params = {"velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)}}
         # Disable curriculum in play (common_step_counter starts at 0, would
         # force Phase 1 and overwrite the play ranges).
         self.curriculum.command_phase = None

@@ -193,6 +193,30 @@ def feet_stance_flat_ankle(
     return torch.sum(deviation * in_contact, dim=1)
 
 
+def foot_contact_velocity_penalty(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    force_threshold: float = 5.0,
+) -> torch.Tensor:
+    """Penalize |foot vertical velocity| while the foot is in contact.
+
+    Upstream of the reactive `contact_forces` penalty: peak GRF scales with
+    Δv_z / Δt at touchdown, so zeroing foot z-velocity before the foot lands
+    directly reduces landing impulse. Mirrors the `feet_slide` pattern but
+    on the world-z axis instead of the xy plane. Use with NEGATIVE weight.
+    """
+    from isaaclab.sensors import ContactSensor
+
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_forces = sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    in_contact = (contact_forces.norm(dim=-1).max(dim=1)[0] > force_threshold).float()
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    foot_vz = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, 2]
+    return torch.sum(torch.abs(foot_vz) * in_contact, dim=1)
+
+
 def leg_symmetry_l1(
     env: "ManagerBasedRLEnv",
     asset_cfg: SceneEntityCfg,

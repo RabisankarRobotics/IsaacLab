@@ -158,13 +158,15 @@ class TahitiC1VelocityRewardsCfg:
     """Velocity-tracking rewards shaped for realistic bent-knee walking."""
 
     # ---- tracking ------------------------------------------------------
-    # 2026-07-21 Round Big-Stride: std 0.5 → 0.25 (peakier reward → stronger
-    # gradient to close velocity error). weight 1.5 → 2.0 on xy tracking to
-    # counter the mild tracking drop after air_time weight jumped 1.0 → 3.0
-    # (V4@20k: error_vel_xy 0.527 → 0.585). Yaw kept at weight 1.5.
+    # 2026-07-22 Round Big-Stride Part 4 (P5): xy tracking weight 2.0 → 2.5.
+    # Prior run at 2.0 left error_vel_xy = 0.41 (actual undershoots cmd by
+    # ~50 % of max cmd 0.8 m/s). Bigger step needs bigger forward payoff —
+    # air_time and foot_clearance don't reward forward displacement, only
+    # velocity tracking does. Yaw kept at 2.0 (already at error_vel_yaw 0.35,
+    # working fine).
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=2.0,
+        weight=2.5,
         params={"command_name": "base_velocity", "std": 0.3},
     )
     track_ang_vel_z_exp = RewTerm(
@@ -214,13 +216,13 @@ class TahitiC1VelocityRewardsCfg:
         weight=0.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            # 2026-07-18 Round HW: 0.13 → 0.08 m. Real human midswing foot
-            # clearance is 5-8 cm — 13 cm was march-height, letting the
-            # policy satisfy the reward with pure vertical knee-lift and
-            # zero forward reach. 8 cm forces the swing energy into the
-            # forward direction (via hip pitch) instead of upward, which is
-            # what human walking actually looks like.
-            "target_height": 0.09,
+            # 2026-07-22 Round Big-Stride Part 4 (P4): 0.09 → 0.06 m. Prior
+            # 0.09 still let the policy earn reward on vertical lift; MuJoCo
+            # showed high knees but short forward stride. 0.06 m is at the
+            # low end of the human range (5-8 cm), so vertical lift saturates
+            # early and the remaining swing energy has to go forward via hip
+            # pitch — direct pressure toward longer strides.
+            "target_height": 0.06,
             "std": 0.05,
             "tanh_mult": 2.0,
         },
@@ -276,16 +278,16 @@ class TahitiC1VelocityRewardsCfg:
     )
 
     # ---- effort / smoothness ------------------------------------------
-    # 2026-07-18 Round HW: dof_acc -4e-7 → -2.5e-7, action_rate -0.015 → -0.010.
-    # V4@20k failed under Bundle B's smoothness + ±1.5 push combo — action_std
-    # rose to 1.11, base_contact 35.9 %, action_rate raw 32.7. The math was
-    # contradictory: policy needed big joint accel to catch pushes, penalty
-    # said "don't." Reverting to pre-Bundle B values restores recovery
-    # authority. Combined with new push cap (±1.0 x / ±0.8 y) and human-walk
-    # reward shape (knee_too_straight 0.29 → 0.10, foot_clearance 0.13 → 0.08),
-    # this is the anti-parade / anti-limp / recovery-safe stack.
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1.25e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+    # 2026-07-22 Round Big-Stride Part 4 (P1, P2): dof_acc -1.25e-7 → -2.0e-7,
+    # action_rate -0.005 → -0.008. Prior halving (to unlock push recovery)
+    # went too far — real robot vibrated visibly under the July-21 policy
+    # while MuJoCo replay looked clean. Bringing weights 60 % back toward
+    # the pre-halving values (-2.5e-7 / -0.010) recovers joint smoothness
+    # for real hardware without fully re-triggering the recovery-authority
+    # problem. Complements the new foot_contact_velocity term (P6) which
+    # attacks foot-specific chatter.
+    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-4.0e-7)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.010)
 
     # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
@@ -300,21 +302,40 @@ class TahitiC1VelocityRewardsCfg:
             ),
         },
     )
-    # 2026-07-21 Round Big-Stride Part 3: prior threshold 1000 N + weight -5e-4
-    # produced almost zero gradient in Isaac (log reward -0.029 → avg per-step
-    # violation ~0.06 N). Isaac's soft contact model reports much lower peaks
-    # than MuJoCo's rigid contact — MuJoCo still showed 3.5-4× BW peaks after
-    # the previous edit. Lower threshold 1000 → 700 N so the penalty actually
-    # fires in Isaac, and 2× the weight for real pressure.
-    # Safety check: static two-foot stance = 262 N/foot (safe, 60% headroom).
-    # Static single-foot support = 525 N (safe, 25% headroom). Only walking
-    # peaks (800+ N) and landings (1000+ N) pay.
+    # 2026-07-22 Round Big-Stride Part 4 (P3): weight -1e-3 → -2e-3. Prior
+    # run reached foot_contact_force reward = -0.089 (up from -0.029) — real
+    # gradient now firing, but still small vs stability terms and MuJoCo
+    # showed peaks still at 3.5-4× BW. Doubling the weight doubles gradient
+    # without changing the physics-anchored threshold. Threshold 700 N stays:
+    # (a) 1.33× BW = upper end of healthy human walk (Winter/Perry gait);
+    # (b) 70 % of X6-60 ankle motor limit (20 Nm ÷ 0.02 m arm ≈ 1000 N).
+    # Both anchors agree. Static two-foot 262 N and single-foot 525 N both
+    # below threshold — standing pays zero.
+    # Now paired with P6 (foot_contact_velocity_penalty) which reduces the
+    # cause (Δv_z at touchdown) upstream of this reactive force cap.
     foot_contact_force = RewTerm(
         func=mdp.contact_forces,
-        weight=-1.0e-3,
+        weight=-2.0e-3,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 700.0,
+            "threshold": 850.0,
+        },
+    )
+    # 2026-07-22 Round Big-Stride Part 4 (P6): soft-landing shaper.
+    # Penalizes |foot z-velocity| while foot in contact. Upstream of the
+    # reactive contact_forces cap above — teaches the policy to slow the
+    # foot before touchdown rather than paying the impulse afterward.
+    # Physics: F_peak ∝ m Δv / Δt, so cutting Δv_z at contact directly cuts
+    # peak GRF. Small weight (-0.5) so it doesn't dominate stance-phase
+    # small oscillations. force_threshold 5 N matches the standard used
+    # elsewhere (feet_slide, feet_stance_flat_ankle).
+    foot_contact_velocity = RewTerm(
+        func=custom_mdp.foot_contact_velocity_penalty,
+        weight=-0.5,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "force_threshold": 5.0,
         },
     )
 
@@ -476,7 +497,7 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.base_com.params["com_range"] = {
             "x": (-0.04, 0.04),
             "y": (-0.04, 0.04),
-            "z": (-0.02, 0.02),
+            "z": (-0.03, 0.03),
         }
 
         # First-training: NO persistent world-frame wrench on the base. This

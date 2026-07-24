@@ -379,7 +379,7 @@ H1_2_STAND_CFG = ArticulationCfg(
 # firm enough to track the randomized "hand forward / side" targets under load.
 # Isaac Lab converts URDF -> USD on first launch.
 # ---------------------------------------------------------------------------
-H1_2_WALK_URDF_PATH = "/home/rabisankar/unitree_rl_gym/resources/robots/h1_2/h1_2_walk.urdf"
+H1_2_WALK_URDF_PATH = "/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/urdf_mesh/h1_2/h1_2_walk.urdf"
 
 H1_2_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(

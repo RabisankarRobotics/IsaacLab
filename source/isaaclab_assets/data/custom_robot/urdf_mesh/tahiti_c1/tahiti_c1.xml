@@ -149,15 +149,16 @@
     <motor name="right_ankle_roll"  joint="right_ankle_roll_joint"  ctrlrange="-20 20"/>
   </actuator>
 
-  <!-- Default-pose keyframe matches Isaac's default_joint_pos from the dumped
-       config (hip_pitch=-0.16, knee=0.36, ankle_pitch=-0.20 for both legs).
+  <!-- Default-pose keyframe matches Isaac's default_joint_pos (updated
+       2026-07-17: hip_pitch=-0.10, knee=0.30, ankle_pitch=+0.20 for both legs
+       — aligned with robo_control deploy base yaml).
        qpos layout: freejoint (7) + 12 joints in MJCF joint declaration order
        (left leg then right leg, hip_yaw→hip_pitch→hip_roll→knee→ankle_pitch→ankle_roll). -->
   <keyframe>
     <key name="home"
-         qpos="0 0 0.9  1 0 0 0
-               0 -0.16 0 0.36 -0.2 0
-               0 -0.16 0 0.36 -0.2 0"/>
+         qpos="0 0 0.93  1 0 0 0
+               0 -0.10 0 0.30 0.20 0
+               0 -0.10 0 0.30 0.20 0"/>
   </keyframe>
 
 </mujoco>

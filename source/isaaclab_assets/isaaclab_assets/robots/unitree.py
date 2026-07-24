@@ -364,6 +364,123 @@ H1_2_STAND_CFG = ArticulationCfg(
 """H1_2 21-DoF (legs + torso + shoulder/elbow_pitch) for the standing task."""
 
 
+# ---------------------------------------------------------------------------
+# H1_2 legs-only WALK task (27 DoF: 12 legs + torso + 7 per arm).
+#
+# Full-body-fingerless: the 24 dexterous-hand finger joints are converted to
+# FIXED by resources/robots/h1_2/generate_walk_urdf.py; with
+# ``merge_fixed_joints=True`` each hand folds into ``*_wrist_yaw_link``, giving
+# a single rigid EE mass at the wrist (the +3 kg payload DR attaches there).
+#
+# Gain philosophy (mirrors G1_29DOF_CLEAN_CFG): legs + torso STIFF, arms/wrists
+# on a softer PD so (a) the legs actually FEEL the CoM shift from arm motion and
+# payload — the whole point of the arm-DR walk — and (b) the arms stay compliant,
+# ready for the loco-manipulation policy to drive later. The arm gains are still
+# firm enough to track the randomized "hand forward / side" targets under load.
+# Isaac Lab converts URDF -> USD on first launch.
+# ---------------------------------------------------------------------------
+H1_2_WALK_URDF_PATH = "/home/rabisankar/unitree_rl_gym/resources/robots/h1_2/h1_2_walk.urdf"
+
+H1_2_CFG = ArticulationCfg(
+    spawn=sim_utils.UrdfFileCfg(
+        asset_path=H1_2_WALK_URDF_PATH,
+        fix_base=False,
+        merge_fixed_joints=True,  # folds the fixed finger links + hand base into *_wrist_yaw_link
+        self_collision=False,
+        activate_contact_sensors=True,
+        joint_drive=sim_utils.UrdfFileCfg.JointDriveCfg(
+            target_type="position",
+            drive_type="force",
+            gains=sim_utils.UrdfFileCfg.JointDriveCfg.PDGainsCfg(
+                stiffness={
+                    # -- legs + torso: STIFF (H1_2's own gains, from H1_2_STAND_CFG) --
+                    ".*_hip_yaw_joint":   200.0,
+                    ".*_hip_roll_joint":  200.0,
+                    ".*_hip_pitch_joint": 200.0,
+                    ".*_knee_joint":      300.0,
+                    ".*_ankle_pitch_joint": 40.0,
+                    ".*_ankle_roll_joint":  40.0,
+                    "torso_joint":        200.0,
+                    # -- arms + wrists: softer, but firm enough to hold the DR poses --
+                    ".*_shoulder_pitch_joint": 100.0,
+                    ".*_shoulder_roll_joint":  100.0,
+                    ".*_shoulder_yaw_joint":    50.0,
+                    ".*_elbow_pitch_joint":     80.0,
+                    ".*_elbow_roll_joint":      40.0,
+                    ".*_wrist_pitch_joint":     40.0,
+                    ".*_wrist_yaw_joint":       40.0,
+                },
+                damping={
+                    ".*_hip_yaw_joint":   2.5,
+                    ".*_hip_roll_joint":  2.5,
+                    ".*_hip_pitch_joint": 2.5,
+                    ".*_knee_joint":      4.0,
+                    ".*_ankle_pitch_joint": 2.0,
+                    ".*_ankle_roll_joint":  2.0,
+                    "torso_joint":        5.0,
+                    ".*_shoulder_pitch_joint": 2.0,
+                    ".*_shoulder_roll_joint":  2.0,
+                    ".*_shoulder_yaw_joint":   2.0,
+                    ".*_elbow_pitch_joint":    2.0,
+                    ".*_elbow_roll_joint":     1.0,
+                    ".*_wrist_pitch_joint":    1.0,
+                    ".*_wrist_yaw_joint":      1.0,
+                },
+            ),
+        ),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            enabled_self_collisions=False,
+            solver_position_iteration_count=4,
+            solver_velocity_iteration_count=4,
+        ),
+    ),
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 1.05),
+        joint_pos={
+            ".*_hip_yaw_joint":     0.0,
+            ".*_hip_pitch_joint":  -0.16,
+            ".*_hip_roll_joint":    0.0,
+            ".*_knee_joint":        0.36,
+            ".*_ankle_pitch_joint":-0.2,
+            ".*_ankle_roll_joint":  0.0,
+            "torso_joint":          0.0,
+            # Bent-arm ready pose. shoulder_pitch>0 is slightly BACK/down (H1_2
+            # convention: negative = forward/up). The soft PD holds the arms here
+            # when idle; the arm-target DR overrides them per episode.
+            ".*_shoulder_pitch_joint": 0.4,
+            ".*_shoulder_roll_joint":  0.0,
+            ".*_shoulder_yaw_joint":   0.0,
+            ".*_elbow_pitch_joint":    0.3,
+            ".*_elbow_roll_joint":     0.0,
+            ".*_wrist_pitch_joint":    0.0,
+            ".*_wrist_yaw_joint":      0.0,
+        },
+        joint_vel={".*": 0.0},
+    ),
+    soft_joint_pos_limit_factor=0.9,
+    # Effort/velocity limits are inherited from the URDF; the PD gains above are
+    # declared in the spawn joint_drive, so one implicit actuator group over all
+    # joints (gains=None -> inherit) is enough, exactly like H1_2_STAND_CFG.
+    actuators={
+        "all": ImplicitActuatorCfg(
+            joint_names_expr=[".*"],
+            stiffness=None,
+            damping=None,
+        ),
+    },
+)
+"""H1_2 27-DoF (12 legs + torso + 7-DoF arms, fingerless) for the legs-only walk."""
+
+
 G1_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/G1/g1.usd",

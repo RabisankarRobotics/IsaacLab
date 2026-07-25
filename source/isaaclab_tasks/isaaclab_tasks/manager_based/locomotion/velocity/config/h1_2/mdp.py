@@ -569,6 +569,43 @@ def push_velocity_levels(
     return torch.tensor(current, device=env.device)
 
 
+def payload_mass_levels(
+    env: "ManagerBasedRLEnv",
+    env_ids,
+    term_name: str = "add_ee_payload",
+    start_iters: int = 5000,
+    full_iters: int = 9000,
+    max_mass: float = 3.0,
+) -> torch.Tensor:
+    """EE-payload curriculum: grow the per-hand payload mass range 0 -> ``max_mass`` kg
+    linearly between ``start_iters`` and ``full_iters``, so the robot learns a stable
+    WALK before it must also balance a heavy manipulated object.
+
+    Parallels :func:`push_velocity_levels` and the stand->walk schedule. The push
+    disturbance was staged, but the +3 kg EE payload (and the arm-motion DR that swings
+    it every 3-5 s) ran at full strength from iter 0, so the robot was learning to walk
+    while balancing a heavy, arm-swung payload — too much at once, and a driver of the
+    falls. Staging the PAYLOAD also stages the coupled arm x payload disturbance: the
+    arm motion is full throughout, but early on it swings ~empty hands, so the
+    destabilising moment ramps in with the payload.
+
+    Requires the ``term_name`` event (the EE-payload mass DR) to run in ``mode="reset"``
+    so the grown range is re-sampled each episode. Iterations = ``common_step_counter
+    // 24`` (matches ``num_steps_per_env``). NOTE: ``common_step_counter`` is not
+    restored on ``--resume``, so a resumed run restarts the payload ramp from 0.
+    """
+    steps_per_iter = 24
+    iters = env.common_step_counter // steps_per_iter
+    span = max(full_iters - start_iters, 1)
+    frac = min(max(iters - start_iters, 0) / span, 1.0)
+    current = frac * max_mass
+
+    term_cfg = env.event_manager.get_term_cfg(term_name)
+    lo = term_cfg.params["mass_distribution_params"][0]
+    term_cfg.params["mass_distribution_params"] = (lo, current)
+    return torch.tensor(current, device=env.device)
+
+
 def stand_to_walk_command_curriculum(
     env: "ManagerBasedRLEnv",
     env_ids,

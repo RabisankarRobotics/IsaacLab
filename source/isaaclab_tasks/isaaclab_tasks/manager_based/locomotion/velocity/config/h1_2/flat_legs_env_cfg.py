@@ -318,7 +318,10 @@ class RewardsCfg:
         func=mdp.joint_acc_l2, weight=-2.5e-7,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
     )
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
+    # weight loosened -0.05 -> -0.03 (2026-07-25): fall recovery / balance catches need
+    # fast action changes, which this penalty suppresses. Kept meaningful (not zeroed)
+    # so the standing-vibration requirement holds; stand_still handles idle quiet too.
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.015)
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits, weight=-5.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
@@ -551,17 +554,24 @@ class EventCfg:
         },
     )
     # +3 kg EE PAYLOAD DR — the "stable pick-and-place without affecting balance"
-    # requirement. Up to +3 kg is added to EACH wrist/hand link at startup (the
-    # fingerless walk asset merged the hand + finger inertia into *_wrist_yaw_link,
-    # so this is the single rigid EE body). Modeling it per-hand covers the worst
-    # case (a heavy object in each hand); halve the upper bound if only one shared
-    # object is ever carried.
+    # requirement. Up to +3 kg is added to EACH wrist/hand link (the fingerless walk
+    # asset merged the hand + finger inertia into *_wrist_yaw_link, so this is the
+    # single rigid EE body). Modeling it per-hand covers the worst case (a heavy object
+    # in each hand); halve the upper bound if only one shared object is ever carried.
+    #
+    # STAGED 2026-07-25 — mode changed startup -> reset and the range starts at (0,0),
+    # grown 0 -> 3 kg by the `payload_mass_levels` curriculum. We had staged the PUSH
+    # disturbance but left this +3 kg payload (swung by the arm-motion DR every 3-5 s)
+    # at full strength from iter 0, so the robot was learning to WALK while balancing a
+    # heavy, arm-swung payload — too much at once, and a driver of the falls. Reset mode
+    # re-samples the payload each episode from the current (growing) range; the mass DR
+    # re-derives from default_mass each call so it does not compound.
     add_ee_payload = EventTerm(
         func=mdp.randomize_rigid_body_mass,
-        mode="startup",
+        mode="reset",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_wrist_yaw_link"),
-            "mass_distribution_params": (0.0, 3.0),
+            "mass_distribution_params": (0.0, 0.0),  # grown to (0, 3) by payload_mass_levels
             "operation": "add",
         },
     )
@@ -690,6 +700,20 @@ class CurriculumCfg:
     #         "start_after_iters": 2000,  # == command_phase stand_until_iters
     #     },
     # )
+    # EE-PAYLOAD curriculum (2026-07-25): keep the payload at 0 while the robot learns
+    # to walk (Phase 1 stand + Phase 2 slow walk), then ramp 0 -> 3 kg per hand across
+    # iters 5000..9000 (Phase 3), so it consolidates a stable full-speed walk before it
+    # must also carry a heavy, arm-swung object. Requires add_ee_payload to be mode=
+    # "reset". Re-tune start/full iters if the walk needs longer to stabilise first.
+    payload_mass_levels = CurrTerm(
+        func=custom_mdp.payload_mass_levels,
+        params={
+            "term_name": "add_ee_payload",
+            "start_iters": 5000,  # begin ramp at Phase 3 (full-speed walk)
+            "full_iters": 9000,   # reach full +3 kg by iter 9000, 1000 iters to consolidate
+            "max_mass": 3.0,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -740,3 +764,7 @@ class H1_2FlatLegsEnvCfg_PLAY(H1_2FlatLegsEnvCfg):
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.curriculum.command_phase = None
         # push_velocity_levels is disabled in the base cfg (push off until it walks)
+        # Payload: the curriculum grows it during training; in PLAY skip the ramp and
+        # demo at the full +3 kg so the walk is shown rejecting a loaded EE.
+        self.curriculum.payload_mass_levels = None
+        self.events.add_ee_payload.params["mass_distribution_params"] = (0.0, 3.0)

@@ -144,12 +144,14 @@ ARM_TARGET_RANGES: dict[str, tuple[float, float]] = {
 
 
 # ---------------------------------------------------------------------------
-# Command: uniform velocity + a `limit_ranges` field the curriculum grows toward
+# Command: uniform velocity + a `limit_ranges` field holding the full (Phase-3) range
 # ---------------------------------------------------------------------------
 @configclass
 class UniformLevelVelocityCommandCfg(UniformVelocityCommandCfg):
-    """``UniformVelocityCommandCfg`` plus the ``limit_ranges`` cap the
-    command-level curriculum (``mdp.lin_vel_cmd_levels``) grows toward."""
+    """``UniformVelocityCommandCfg`` plus ``limit_ranges``, the full (Phase-3)
+    command range. ``mdp.stand_to_walk_command_curriculum`` steps ``ranges`` up to
+    these values (its ``*_full`` params mirror them), and PLAY sets ``ranges`` to
+    ``limit_ranges`` directly to demo at full speed."""
 
     limit_ranges: UniformVelocityCommandCfg.Ranges = MISSING
 
@@ -599,11 +601,24 @@ class EventCfg:
             "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
         },
     )
+    # PUSH DR — starts at ZERO and is grown by ``custom_mdp.push_velocity_levels``
+    # only once the robot survives full episodes.
+    #
+    # This must NOT be at full strength from iteration 0. push_by_setting_velocity
+    # writes the root velocity directly, and a v m/s kick displaces the capture point
+    # by v / sqrt(g / h_com). H1_2's CoM rides ~0.85 m, so 0.5 m/s => ~0.147 m — past
+    # the foot edge, i.e. only a STEP recovers it. The same 0.5 m/s is survivable on
+    # G1 (h_com ~0.6 m => 0.124 m) which is where this value was copied from, and
+    # H1_2 also needs ~2.7x G1's ankle torque for the same tilt while running the
+    # same 40 N·m/rad ankle stiffness. Measured on the 10k-iteration run: 100% of
+    # terminations were bad_orientation, 79% in the 5-8 s window (pushes fire at
+    # t = 5/10/15 s), mean pelvis tilt spiking 0.10 -> 0.27 rad within 0.8 s of a
+    # push. Walk first, harden second.
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
         interval_range_s=(5.0, 5.0),
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+        params={"velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0)}},
     )
 
 
@@ -612,8 +627,44 @@ class EventCfg:
 # ---------------------------------------------------------------------------
 @configclass
 class CurriculumCfg:
-    lin_vel_cmd_levels = CurrTerm(func=custom_mdp.lin_vel_cmd_levels)
-    ang_vel_cmd_levels = CurrTerm(func=custom_mdp.ang_vel_cmd_levels)
+    # FIXED 3-phase command schedule (ported from the tuned tahiti_c1 recipe), NOT the
+    # performance-gated lin/ang_vel_cmd_levels. Those gates deadlocked the 10 000-iter
+    # run: a robot that falls early can never clear a per-episode tracking-quality
+    # threshold, so the command range stayed pinned at lin=0.1/ang=0.2 forever. A
+    # fixed schedule can't stall — the command grows on a known iteration timeline, so
+    # the robot always gets a reason to start stepping.
+    #   Phase 1 (iter 0 .. stand):  zero command, 100% standing envs (learn to stand).
+    #   Phase 2 (stand .. slow):    command x 0.3, 30% standing (slow walk).
+    #   Phase 3 (>= slow):          full command, 10% standing.
+    # *_full ranges MUST equal commands.base_velocity.limit_ranges below.
+    command_phase = CurrTerm(
+        func=custom_mdp.stand_to_walk_command_curriculum,
+        params={
+            "stand_until_iters": 2000,  # TUNE — user proposed 3000; 2000 is tahiti-proven
+            "slow_until_iters": 5000,   # TUNE — Phase 2 spans iters 2000..5000
+            "slow_scale": 0.3,
+            "lin_vel_x_full": (-0.5, 1.0),  # == limit_ranges.lin_vel_x
+            "lin_vel_y_full": (-0.5, 0.5),  # == limit_ranges.lin_vel_y
+            "ang_vel_z_full": (-0.5, 0.5),  # == limit_ranges.ang_vel_z
+            "rel_standing_envs_phase1": 1.0,
+            "rel_standing_envs_phase2": 0.3,
+            "rel_standing_envs_phase3": 0.1,
+        },
+    )
+    # Disturbance curriculum: raise the push kick 0.0 -> 0.5 m/s in 0.05 steps, only
+    # while the robot is surviving >=80% of the episode AND only after the stand phase
+    # ends (start_after_iters == stand_until_iters above). Without the floor the robot
+    # trivially survives pure standing and push would harden before it can walk.
+    push_velocity_levels = CurrTerm(
+        func=custom_mdp.push_velocity_levels,
+        params={
+            "term_name": "push_robot",
+            "step": 0.05,
+            "max_velocity": 0.5,
+            "min_alive_frac": 0.8,
+            "start_after_iters": 2000,  # == command_phase stand_until_iters
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -656,9 +707,11 @@ class H1_2FlatLegsEnvCfg_PLAY(H1_2FlatLegsEnvCfg):
         # clean demo: no observation noise
         self.observations.policy.enable_corruption = False
         # keep arm randomization + EE payload ON so the demo shows the walk rejecting
-        # arm motion and payload — the whole point of this task. Disable pushes only.
-        # self.events.push_robot = None
+        # arm motion and payload — the whole point of this task. Disable pushes only
+        # (raise velocity_range here to whatever push level training actually reached
+        # if you want to demo disturbance rejection).
+        self.events.push_robot = None
         # play at the fully-grown command range (skip the curriculum ramp)
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-        self.curriculum.lin_vel_cmd_levels = None
-        self.curriculum.ang_vel_cmd_levels = None
+        self.curriculum.command_phase = None
+        self.curriculum.push_velocity_levels = None

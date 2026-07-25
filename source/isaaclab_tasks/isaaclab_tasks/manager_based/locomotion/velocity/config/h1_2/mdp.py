@@ -411,29 +411,62 @@ def gait_phase(env: "ManagerBasedRLEnv", period: float) -> torch.Tensor:
     return phase
 
 
+def _tracking_quality(env: "ManagerBasedRLEnv", env_ids, reward_term_name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """Split a curriculum gate into its two independent questions:
+
+    * ``quality`` — mean tracking reward **per second of episode actually lived**,
+      i.e. in ``[0, weight]`` regardless of how long the robot survived.
+    * ``alive_frac`` — mean episode length as a fraction of the full episode.
+
+    The original gate divided the episode SUM by ``max_episode_length_s``, which
+    silently multiplies the two together. That deadlocks a robot that falls early:
+    with episodes ending at 32% of the horizon the term is capped at 0.32 and can
+    NEVER clear a 0.8 gate no matter how perfectly it tracks — the command range
+    stays at its start value forever, so the robot never gets a reason to walk,
+    so it never survives longer. (This is exactly what pinned the H1_2 run at
+    lin=0.1/ang=0.2 for 10 000 iterations.) Keeping the two signals separate lets
+    the gate ask "does it track well?" AND "does it stay up?" independently.
+
+    Must be called from a curriculum term: ``curriculum_manager.compute()`` runs
+    first in ``_reset_idx``, so ``episode_length_buf`` and ``_episode_sums`` still
+    hold the finished episode's values.
+    """
+    ep_len_s = (env.episode_length_buf[env_ids].float() * env.step_dt).clamp(min=env.step_dt)
+    quality = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids] / ep_len_s)
+    alive_frac = torch.mean(ep_len_s) / env.max_episode_length_s
+    return quality, alive_frac
+
+
 def lin_vel_cmd_levels(
     env: "ManagerBasedRLEnv",
     env_ids,
     reward_term_name: str = "track_lin_vel_xy",
+    threshold: float = 0.75,
+    min_alive_frac: float = 0.5,
 ) -> torch.Tensor:
     """Command curriculum: widen the linear-velocity command range by 0.1 m/s
-    per side once mean linear-tracking reward clears 80% of its weight.
+    per side once the robot both TRACKS well and STAYS UP.
 
     Starts the robot on tiny commands (easy, clean slow walking) and grows the
     range only as it earns it, up to ``cfg.limit_ranges``. Requires the command
     term to be a ``UniformLevelVelocityCommandCfg`` (has ``limit_ranges``). The
     reward term named ``reward_term_name`` must exist (default matches the
     ``track_lin_vel_xy`` term in the env cfg).
+
+    ``threshold`` is on the per-second tracking quality (fraction of the term's
+    weight); ``min_alive_frac`` is the survival precondition, so the command range
+    never widens while the robot is still falling over. See :func:`_tracking_quality`
+    for why the two must be measured separately.
     """
     command_term = env.command_manager.get_term("base_velocity")
     ranges = command_term.cfg.ranges
     limit_ranges = command_term.cfg.limit_ranges
 
     reward_term = env.reward_manager.get_term_cfg(reward_term_name)
-    reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
+    quality, alive_frac = _tracking_quality(env, env_ids, reward_term_name)
 
     if env.common_step_counter % env.max_episode_length == 0:
-        if reward > reward_term.weight * 0.8:
+        if quality > reward_term.weight * threshold and alive_frac > min_alive_frac:
             delta_command = torch.tensor([-0.1, 0.1], device=env.device)
             ranges.lin_vel_x = torch.clamp(
                 torch.tensor(ranges.lin_vel_x, device=env.device) + delta_command,
@@ -453,18 +486,25 @@ def ang_vel_cmd_levels(
     env: "ManagerBasedRLEnv",
     env_ids,
     reward_term_name: str = "track_ang_vel_z",
+    threshold: float = 0.5,
+    min_alive_frac: float = 0.5,
 ) -> torch.Tensor:
-    """Yaw-rate command curriculum (mirror of :func:`lin_vel_cmd_levels`), grown
-    once yaw tracking clears 80% of its weight."""
+    """Yaw-rate command curriculum (mirror of :func:`lin_vel_cmd_levels`).
+
+    ``threshold`` defaults LOWER than the linear gate on purpose: a biped's yaw
+    tracking reward plateaus well below its linear one (the base yaws constantly
+    as a side effect of stepping), so a 0.8 gate is effectively unreachable and
+    the yaw range would stay pinned at its start value forever.
+    """
     command_term = env.command_manager.get_term("base_velocity")
     ranges = command_term.cfg.ranges
     limit_ranges = command_term.cfg.limit_ranges
 
     reward_term = env.reward_manager.get_term_cfg(reward_term_name)
-    reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
+    quality, alive_frac = _tracking_quality(env, env_ids, reward_term_name)
 
     if env.common_step_counter % env.max_episode_length == 0:
-        if reward > reward_term.weight * 0.8:
+        if quality > reward_term.weight * threshold and alive_frac > min_alive_frac:
             delta_command = torch.tensor([-0.1, 0.1], device=env.device)
             ranges.ang_vel_z = torch.clamp(
                 torch.tensor(ranges.ang_vel_z, device=env.device) + delta_command,
@@ -473,6 +513,148 @@ def ang_vel_cmd_levels(
             ).tolist()
 
     return torch.tensor(ranges.ang_vel_z[1], device=env.device)
+
+
+def push_velocity_levels(
+    env: "ManagerBasedRLEnv",
+    env_ids,
+    term_name: str = "push_robot",
+    step: float = 0.05,
+    max_velocity: float = 0.5,
+    min_alive_frac: float = 0.8,
+    start_after_iters: int = 0,
+) -> torch.Tensor:
+    """Disturbance curriculum: grow the ``push_robot`` velocity kick only once the
+    robot reliably survives a full episode AND the walk phase has started.
+
+    ``push_by_setting_velocity`` writes the root velocity DIRECTLY, so a v m/s kick
+    displaces the capture point by ``v / sqrt(g / h_com)``. For H1_2 (h_com ~0.85 m)
+    a 0.5 m/s push moves it ~0.147 m — past the foot edge, so recovery REQUIRES a
+    step. Applying that from iteration 0, before the command curriculum has given
+    the robot any reason to learn stepping, made the first push (t = 5 s) fatal:
+    100% of terminations were ``bad_orientation``, 79% of them in the 5-8 s window,
+    mean pelvis tilt spiking from 0.10 to 0.27 rad within 0.8 s of every push.
+
+    So: learn to walk first, harden second. Start ``velocity_range`` at ~0 in the
+    env cfg and let this term raise it as survival is demonstrated.
+
+    ``start_after_iters`` FLOORS the growth to the walk phase. When the command uses
+    the fixed :func:`stand_to_walk_command_curriculum`, the robot trivially survives
+    the pure-standing phase, so a survival-only gate would ramp the push UP before
+    the robot can walk — reintroducing "too much at once". Set this to the schedule's
+    ``stand_until_iters`` so push stays at 0 until slow-walking begins. Iterations are
+    derived as ``common_step_counter // 24`` (``steps_per_iter``), matching the fixed
+    schedule and rsl_rl ``num_steps_per_env=24`` — keep the two in sync.
+    """
+    term_cfg = env.event_manager.get_term_cfg(term_name)
+    vel_range = term_cfg.params["velocity_range"]
+    current = float(vel_range["x"][1])
+
+    ep_len_s = (env.episode_length_buf[env_ids].float() * env.step_dt).clamp(min=env.step_dt)
+    alive_frac = torch.mean(ep_len_s) / env.max_episode_length_s
+
+    steps_per_iter = 24  # must match agents/rsl_rl_ppo_cfg.py num_steps_per_env
+    iters = env.common_step_counter // steps_per_iter
+
+    if (
+        env.common_step_counter % env.max_episode_length == 0
+        and alive_frac > min_alive_frac
+        and iters >= start_after_iters
+    ):
+        current = min(current + step, max_velocity)
+        vel_range["x"] = (-current, current)
+        vel_range["y"] = (-current, current)
+        term_cfg.params["velocity_range"] = vel_range
+
+    return torch.tensor(current, device=env.device)
+
+
+def stand_to_walk_command_curriculum(
+    env: "ManagerBasedRLEnv",
+    env_ids,
+    stand_until_iters: int = 2000,
+    slow_until_iters: int = 5000,
+    slow_scale: float = 0.3,
+    lin_vel_x_full: tuple[float, float] = (-0.5, 1.0),
+    lin_vel_y_full: tuple[float, float] = (-0.5, 0.5),
+    ang_vel_z_full: tuple[float, float] = (-0.5, 0.5),
+    rel_standing_envs_phase1: float = 1.0,
+    rel_standing_envs_phase2: float = 0.3,
+    rel_standing_envs_phase3: float = 0.1,
+) -> torch.Tensor:
+    """Three-phase stand→slow-walk→full-walk command curriculum (ported verbatim from
+    the tuned ``config/tahiti_c1_velocity`` recipe).
+
+    Phase 1 (iter 0 .. stand_until_iters):     zero cmd,  100 % standing envs.
+    Phase 2 (stand_until_iters .. slow):       cmd × slow_scale, 30 % standing.
+    Phase 3 (>= slow_until_iters):             full ranges, 10 % standing.
+
+    This REPLACES the performance-gated ``lin/ang_vel_cmd_levels`` for H1_2. Those
+    gates deadlocked the 10 000-iteration run (a robot falling early can never clear
+    a per-episode quality threshold, so the command range stayed pinned at its start
+    value forever). A fixed schedule can't stall: the command simply grows on a
+    known iteration timeline, so the robot is guaranteed a reason to start stepping.
+    The default ``*_full`` ranges match ``commands.base_velocity.limit_ranges``.
+
+    Iteration count derived from ``env.common_step_counter // 24`` (matches rsl_rl
+    default ``num_steps_per_env=24`` in ``agents/rsl_rl_ppo_cfg.py`` — keep in sync).
+
+    Auto-detects ``--resume`` / ``--checkpoint`` / ``--load_run`` from
+    ``/proc/self/cmdline`` (train.py wipes ``sys.argv`` before this runs) and, if any
+    is present, jumps straight to Phase 3. Rationale: ``env.common_step_counter`` is
+    NOT restored on rsl_rl resume, so without this check the counter starts at 0 and
+    forces a resumed policy back through the stand phase.
+    """
+    cmd_term = env.command_manager.get_term("base_velocity")
+    cfg = cmd_term.cfg
+
+    if not hasattr(env, "_curriculum_resume_detected"):
+        import sys
+
+        try:
+            with open("/proc/self/cmdline", "rb") as fh:
+                argv = fh.read().decode("utf-8", errors="replace").split("\x00")
+        except OSError:
+            argv = sys.argv
+        env._curriculum_resume_detected = (
+            "--resume" in argv
+            or any(a == "--checkpoint" or a.startswith("--checkpoint=") for a in argv)
+            or any(a == "--load_run" or a.startswith("--load_run=") for a in argv)
+        )
+        if env._curriculum_resume_detected:
+            print("[curriculum] --resume detected → skipping stand→walk curriculum, jumping to Phase 3.")
+
+    if env._curriculum_resume_detected:
+        cfg.ranges.lin_vel_x = lin_vel_x_full
+        cfg.ranges.lin_vel_y = lin_vel_y_full
+        cfg.ranges.ang_vel_z = ang_vel_z_full
+        cfg.rel_standing_envs = rel_standing_envs_phase3
+        return torch.tensor(3.0, device=env.device)
+
+    steps_per_iter = 24
+    iters = env.common_step_counter // steps_per_iter
+
+    if iters < stand_until_iters:
+        cfg.ranges.lin_vel_x = (0.0, 0.0)
+        cfg.ranges.lin_vel_y = (0.0, 0.0)
+        cfg.ranges.ang_vel_z = (0.0, 0.0)
+        cfg.rel_standing_envs = rel_standing_envs_phase1
+        phase = 1.0
+    elif iters < slow_until_iters:
+        s = slow_scale
+        cfg.ranges.lin_vel_x = (lin_vel_x_full[0] * s, lin_vel_x_full[1] * s)
+        cfg.ranges.lin_vel_y = (lin_vel_y_full[0] * s, lin_vel_y_full[1] * s)
+        cfg.ranges.ang_vel_z = (ang_vel_z_full[0] * s, ang_vel_z_full[1] * s)
+        cfg.rel_standing_envs = rel_standing_envs_phase2
+        phase = 2.0
+    else:
+        cfg.ranges.lin_vel_x = lin_vel_x_full
+        cfg.ranges.lin_vel_y = lin_vel_y_full
+        cfg.ranges.ang_vel_z = ang_vel_z_full
+        cfg.rel_standing_envs = rel_standing_envs_phase3
+        phase = 3.0
+
+    return torch.tensor(phase, device=env.device)
 
 
 def hold_joint_targets_at_default(

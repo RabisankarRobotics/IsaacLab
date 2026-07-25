@@ -292,9 +292,11 @@ class ObservationsCfg:
 @configclass
 class RewardsCfg:
     # -- task
+    # weight raised 1.0 -> 1.5 (2026-07-25): translation must clearly out-reward the
+    # safe "stand still" optimum. See the feet_air_time / feet_clearance change below.
     track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
+        weight=1.5,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z = RewTerm(
@@ -357,6 +359,22 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
+    # THE step-driver (added 2026-07-25, from the official H1/G1 recipe). Rewards
+    # SINGLE-SUPPORT air time — it is exactly ZERO while both feet are planted
+    # (single_stance requires one foot in contact) and only pays once the robot lifts
+    # a foot, up to `threshold` s. This is what breaks the "stand perfectly still"
+    # optimum: unlike feet_gait (which hands out ~55% just for matching the stance
+    # phase) and the old feet_clearance (which paid MAX for a planted foot), a stander
+    # earns 0 here. Command-gated, so it never forces stepping while idle.
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_positive_biped,
+        weight=0.5,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "threshold": 0.4,
+        },
+    )
     # L/R symmetry nudge: penalize variance of air/contact time across the two feet.
     air_time_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
@@ -371,18 +389,24 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
-    feet_clearance = RewTerm(
-        func=custom_mdp.foot_clearance_reward,
-        weight=1.0,
-        params={
-            "std": 0.05,
-            "tanh_mult": 2.0,
-            # TUNE: swing-foot lift target. 0.13 is the G1 value; H1_2's foot/leg is
-            # longer so a slightly higher clearance may look more natural. Check in PLAY.
-            "target_height": 0.13,
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-        },
-    )
+    # DISABLED 2026-07-25 — this reward multiplies the foot-height error by
+    # tanh(foot_horizontal_speed), so a PLANTED foot (zero horizontal speed) zeroes
+    # the penalty and collects the MAXIMUM reward (exp(0) = 1.0). It therefore paid
+    # the robot full marks for NEVER lifting a foot, which is a direct driver of the
+    # "stand perfectly still" collapse. The official H1/G1 configs don't use it at all
+    # — feet_air_time (above) is the foot-lift driver. Re-enable ONLY if, once walking,
+    # a PLAY rollout shows the feet dragging/scuffing (too little swing clearance), and
+    # then prefer a swing-gated variant or swing_knee_flexion so a stander can't farm it.
+    # feet_clearance = RewTerm(
+    #     func=custom_mdp.foot_clearance_reward,
+    #     weight=1.0,
+    #     params={
+    #         "std": 0.05,
+    #         "tanh_mult": 2.0,
+    #         "target_height": 0.13,
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+    #     },
+    # )
 
     # -- feet must not converge (the SIDEWAYS-WALK FALL fix). Self-collisions are OFF
     # and undesired_contacts excludes ankles, so nothing else stops the feet from
@@ -651,20 +675,21 @@ class CurriculumCfg:
             "rel_standing_envs_phase3": 0.1,
         },
     )
-    # Disturbance curriculum: raise the push kick 0.0 -> 0.5 m/s in 0.05 steps, only
-    # while the robot is surviving >=80% of the episode AND only after the stand phase
-    # ends (start_after_iters == stand_until_iters above). Without the floor the robot
-    # trivially survives pure standing and push would harden before it can walk.
-    push_velocity_levels = CurrTerm(
-        func=custom_mdp.push_velocity_levels,
-        params={
-            "term_name": "push_robot",
-            "step": 0.05,
-            "max_velocity": 0.5,
-            "min_alive_frac": 0.8,
-            "start_after_iters": 2000,  # == command_phase stand_until_iters
-        },
-    )
+    # PUSH DISABLED 2026-07-25 — get the robot WALKING first; push is a disturbance to
+    # reject AFTER it has a gait, and while it can't walk it just causes falls (it was
+    # ~87% of terminations at 10k). push_robot stays at (0,0) (a true no-op: the event
+    # does vel += 0), so no kick is ever applied. RE-ENABLE this term once a PLAY
+    # rollout shows a stable walk, to harden disturbance rejection.
+    # push_velocity_levels = CurrTerm(
+    #     func=custom_mdp.push_velocity_levels,
+    #     params={
+    #         "term_name": "push_robot",
+    #         "step": 0.05,
+    #         "max_velocity": 0.5,
+    #         "min_alive_frac": 0.8,
+    #         "start_after_iters": 2000,  # == command_phase stand_until_iters
+    #     },
+    # )
 
 
 # ---------------------------------------------------------------------------
@@ -714,4 +739,4 @@ class H1_2FlatLegsEnvCfg_PLAY(H1_2FlatLegsEnvCfg):
         # play at the fully-grown command range (skip the curriculum ramp)
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.curriculum.command_phase = None
-        self.curriculum.push_velocity_levels = None
+        # push_velocity_levels is disabled in the base cfg (push off until it walks)

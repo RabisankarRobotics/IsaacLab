@@ -31,18 +31,19 @@ Design (same deploy-safe contract as the G1 clean task):
 * **Asymmetric, deploy-safe actor-critic**: the actor reads only hardware-measurable
   terms (IMU gyro, IMU tilt, command, the 12 leg encoders, last action, and — arm-aware
   — the 15 upper-body encoders). ``base_lin_vel`` is critic-only.
-* **No observation history**; step timing comes from a 2-value ``gait_phase`` clock (the
-  sin/cos phase from the official Unitree h1_2 recipe), frozen at idle so it never marches
-  in place. Stepping is driven by ``feet_air_time_positive_biped`` (re-added 2026-07-27 — the
-  positive "swing carrot" our own MLP walkers use), with ``feet_gait`` as a light timing
-  shaper. (The 5.6k server run showed the gait/``feet_swing_height`` pair balanced the robot
-  but never lifted a foot — no term gave a *standing* robot a reward it was missing; the
-  air-time carrot is exactly 0 in double support, so it pulls the policy OUT of standing.)
+* **No observation history and NO gait clock** (removed 2026-07-27 in the full alignment to
+  the user's own proven MLP walker ``hv1_2_velocity``, which walks with plain instantaneous
+  obs and no clock). Stepping is driven SOLELY by ``feet_air_time_positive_biped`` (the
+  positive "swing carrot" both proven walkers use). The 5.6k/7.6k server runs proved the
+  gait-clock ``feet_gait`` reward was a STANDING SUBSIDY (a planted foot farms ~55% of it for
+  free), which — with a high ``alive`` — made standing the optimum and left the carrot (0
+  until a step exists) unable to compete. The fix aligns the stepping-critical knobs to the
+  walker: no gait reward/obs, ``alive`` 0.15->0.05, ``termination_penalty`` -100 restored,
+  ``action_rate`` -0.01->-0.003, ``track_lin_vel`` ->1.5 (out-weighting the farmable yaw).
 
-Policy observation layout (77), in concat order — a deploy runner must rebuild
+Policy observation layout (75), in concat order — a deploy runner must rebuild
 this exactly:
     base_ang_vel (3) | projected_gravity (3) | velocity_commands (3) |
-    gait_phase (2) |
     joint_pos legs (12) | joint_vel legs (12) |
     last_action (12) | upper_body_joint_pos (15) | upper_body_joint_vel (15)
 
@@ -245,17 +246,15 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        # GAIT-CLOCK OBSERVATION RESTORED 2026-07-26 (full switch to the OFFICIAL Unitree
-        # h1_2 recipe). The official policy observes a 2-value sin/cos gait phase (the "+2"
-        # in its 47-dim obs) and pairs it with the `contact` reward. This clock is what
-        # gives a memoryless MLP a step-timing reference, and — critically — it makes the
-        # `contact` reward provide a CONSTANT gradient toward lifting the swing foot (a
-        # planted foot loses the swing-window credit every step), which feet_air_time /
-        # feet_swing_height could not (both are identically 0 for a standing robot, so they
-        # reward stepping only AFTER it happens and can't teach it to START). Frozen at idle
-        # (custom_mdp._gait_phase_scalar) + command-gated feet_gait so it does not march in
-        # place. Actor obs 75 -> 77 (critic 78 -> 80). Deploy runner must mirror this clock.
-        gait_phase = ObsTerm(func=custom_mdp.gait_phase, params={"period": GAIT_PERIOD})
+        # GAIT-CLOCK OBSERVATION REMOVED 2026-07-27 — full alignment to the user's OWN proven
+        # MLP walker (hv1_2_velocity), which has NO gait clock (obs = ang_vel, gravity, cmd,
+        # joint_pos, joint_vel, actions) and DOES step. The clock was paired with the `contact`
+        # gait reward, and that reward turned out to SUBSIDIZE standing (a planted foot already
+        # matches the stance window ~55% of the cycle, so a stander farms ~half the term for
+        # free) — the 7.6k server run proved it: pure stander, feet_air_time pinned at 0.0000,
+        # gait ~0.95 raw = the stander level. With the gait reward gone (below) this obs feeds
+        # a clock no term references, so it is removed too. Actor obs 77 -> 75 (critic 80 -> 78).
+        # gait_phase = ObsTerm(func=custom_mdp.gait_phase, params={"period": GAIT_PERIOD})
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
@@ -318,25 +317,31 @@ class RewardsCfg:
     # essentially the SAME ~0 tracking reward as a standing one (exp(-0.87^2/0.09)~0 either
     # way), so there was NO gradient pulling it from "still" toward "moving". At std 0.5 the
     # same error 0.87->0.5 jumps the reward 0.05->0.37 — a real slope to climb toward walking.
+    # track_lin 1.0 -> 1.5 (2026-07-27) = the hv1_2 walker's value, and it now OUT-WEIGHTS
+    # track_ang (1.0) on purpose: the 7.6k run farmed track_ang_vel_z (0.75, the single
+    # biggest reward) by PIVOTING the base in place to satisfy yaw commands while never
+    # translating (error_vel_xy stuck at 0.88). Making linear tracking pay 1.5x the yaw kills
+    # that shortcut — forward progress is now the cheaper way to earn tracking reward.
     track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.0,
+        weight=1.5,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp,
-        weight=1.0,  # official tracking_ang_vel = 0.5
+        weight=1.0,  # kept BELOW track_lin (was farmed by pivot-in-place); hv1_2 uses 1.5
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
-    # 0.15 = official alive. This IS the survival signal in the official recipe (it has NO
-    # explicit termination penalty — see below); a robot that lives longer accrues more.
-    alive = RewTerm(func=mdp.is_alive, weight=0.15)
-    # TERMINATION PENALTY REMOVED 2026-07-26 to match the official recipe (legged_gym h1_2
-    # uses termination = 0). On a robot still learning to step, a large fall penalty
-    # suppresses exactly the risky exploration a first step needs; the official relies on
-    # alive (0.15) + lost future reward instead. Re-add a small one only if it falls too much
-    # once it is walking.
-    # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
+    # alive 0.15 -> 0.05 (2026-07-27) = hv1_2 value. At 0.15 this was a big STANDING SUBSIDY:
+    # a robot that just balances collects it in full with zero risk, so standing beat stepping.
+    # Paired with the -100 termination penalty below (as hv1_2 does), the incentive flips —
+    # survival still matters, but not enough to make standing-forever the optimum.
+    alive = RewTerm(func=mdp.is_alive, weight=0.05)
+    # TERMINATION PENALTY RESTORED 2026-07-27 (-100 = hv1_2/tahiti). Removing it (to copy the
+    # official LSTM recipe) left falling nearly free; combined with the alive+gait standing
+    # subsidy, the robot's safest high-reward strategy was to stand. Both of the user's OWN
+    # MLP walkers pair a LOW alive (0.05) with a -100 termination penalty — restored here.
+    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
 
     # -- base / smoothness (joint-wise terms scoped to the actuated legs so we never
     #    charge the policy for the PD holding the parked torso/arms). Weights = official h1_2.
@@ -353,7 +358,10 @@ class RewardsCfg:
         func=mdp.joint_acc_l2, weight=-2.5e-7,  # dof_acc = official
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
     )
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.01)  # -0.01 = official
+    # action_rate -0.01 -> -0.003 (2026-07-27) = hv1_2 value. At -0.01 (3.3x heavier) this
+    # penalized exactly the fast, alternating leg-action changes a real step requires, so a
+    # smooth stand was cheaper than a step. Both proven MLP walkers use -0.003.
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.003)
     dof_pos_limits = RewTerm(
         func=mdp.joint_pos_limits, weight=-5.0,  # -5.0 = official h1_2
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
@@ -386,28 +394,28 @@ class RewardsCfg:
     # official target (robot inits at ~1.05 m); verify the settled walking height in PLAY.
     base_height = RewTerm(func=mdp.base_height_l2, weight=-10.0, params={"target_height": 1.0})
 
-    # -- feet / gait (the natural-walk drivers) — OFFICIAL Unitree h1_2 recipe (2026-07-26)
+    # -- feet / gait
     #
-    # THE STEP-TIMING DRIVER (official `contact`, weight 0.18). RESTORED after the
-    # feet_air_time approach empirically failed (5000 iters, feet_air_time pinned ~0.0015,
-    # error_vel_xy 0.87 — never stepped). This is the term feet_air_time/feet_swing_height
-    # could NOT replace: the gait clock says which foot should be planted vs lifted RIGHT
-    # NOW, and this pays +1 per foot for matching. Crucially its gradient is NON-ZERO for a
-    # standing robot — a planted foot LOSES the swing-window credit every step — so it
-    # actively, continuously pulls the foot up, from a standing start. (feet_air_time only
-    # pays AFTER a step exists, so it couldn't teach the first step.) threshold 0.55 =
-    # official is_stance cutoff. Command-gated (frozen clock) so it never marches in place.
-    gait = RewTerm(
-        func=custom_mdp.feet_gait,
-        weight=0.18,  # official `contact` scale
-        params={
-            "period": GAIT_PERIOD,
-            "offset": [0.0, 0.5],  # anti-phase (alternating steps), official offset 0.5
-            "threshold": 0.55,  # stance duty = official is_stance cutoff
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-        },
-    )
+    # GAIT CLOCK REWARD REMOVED 2026-07-27 — this was THE standing subsidy. `feet_gait` pays
+    # +1 per foot whose contact matches the phase-clock schedule; a PLANTED foot already
+    # matches the stance window (leg_phase < 0.55) ~55% of every cycle, so a robot that never
+    # lifts a foot still farms ~half the term for free. The 7.6k server run is the proof:
+    # pure stander, feet_air_time == 0.0000, yet `gait` sat at ~0.95 raw = exactly the free
+    # stander level. That free reward, on top of alive 0.15, made standing the optimum and
+    # the air-time carrot (0 until a step exists) could never out-earn it. Neither of the
+    # user's OWN MLP walkers (tahiti, hv1_2) uses a gait clock at all — feet_air_time is the
+    # SOLE stepping driver there, and they step. Matching that. (gait_phase OBS removed too.)
+    # gait = RewTerm(
+    #     func=custom_mdp.feet_gait,
+    #     weight=0.18,
+    #     params={
+    #         "period": GAIT_PERIOD,
+    #         "offset": [0.0, 0.5],
+    #         "threshold": 0.55,
+    #         "command_name": "base_velocity",
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #     },
+    # )
     # THE MISSING CARROT — feet_air_time_positive_biped, RE-ADDED 2026-07-27.
     # Diagnosis from the 5.6k-iter SERVER run (4096 env, obs-normalization ON): the robot now
     # BALANCES well (ep len 938/1000, bad_orientation only 16%) but STILL won't step —

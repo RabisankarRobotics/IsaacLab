@@ -286,6 +286,41 @@ def foot_contact_velocity_penalty(
     return torch.sum(torch.abs(foot_vz) * in_contact, dim=1)
 
 
+def feet_swing_height(
+    env: "ManagerBasedRLEnv",
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    target_height: float = 0.08,
+    force_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize the SWING foot for not reaching ``target_height`` — ported VERBATIM
+    from the OFFICIAL Unitree ``h1_2`` walk recipe (``H1_2Robot._reward_feet_swing_height``
+    in ``unitree_rl_gym``, applied there at weight -20).
+
+    For each foot NOT in contact (i.e. airborne / in swing), returns
+    ``(foot_z - target_height)**2``; a foot in contact contributes 0. Summed over feet.
+    This is the DIRECT foot-lift shaper the official config relies on and this task
+    lacked: it makes every swing lift the foot to a real clearance (~0.08 m) instead of
+    a flat-footed scuff. Unlike the old ``feet_clearance`` it does NOT reward a planted
+    foot (a planted foot is in_contact -> contributes 0, not the max). Use a NEGATIVE weight.
+
+    ``target_height`` is the world-z of the ``ankle_roll_link`` ORIGIN at the top of
+    swing; 0.08 m matches the official value for this exact leg (verify in a PLAY rollout
+    and nudge if the resting-foot origin sits higher/lower than G1's). ``force_threshold``
+    (N) is only the contact detector (foot is "down" when |net force| exceeds it).
+    """
+    from isaaclab.sensors import ContactSensor
+
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_forces = sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :]
+    in_contact = contact_forces.norm(dim=-1).max(dim=1)[0] > force_threshold  # (N, feet) bool
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    foot_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # (N, feet)
+    pos_error = torch.square(foot_z - target_height) * (~in_contact)
+    return torch.sum(pos_error, dim=1)
+
+
 # ===========================================================================
 # Ported from unitree_rl_lab (the reference G1 velocity recipe).
 #

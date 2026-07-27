@@ -32,8 +32,19 @@ class H1_2FlatLegsPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
+        # OBS NORMALIZATION ON 2026-07-27 — this was OFF while every other walking config
+        # the user owns has it ON. Root problem found by diffing the PPO/actuator configs:
+        # our obs are fed RAW and UNSCALED, and they include 27 raw joint velocities
+        # (±10-20 rad/s, +/-1.5 noise). The official legged_gym h1_2 hides this by manually
+        # scaling obs (dof_vel x0.05, ang_vel x0.25); IsaacLab configs don't scale, so they
+        # rely on empirical (running mean/std) normalization instead. tahiti_c1 AND hv1_2
+        # (both WALK, both the same MLP [512,256,128] as here) set this True — hv1_2's own
+        # comment records that leaving it False caused "first linear layer -> activation
+        # blow-up -> late-game collapse". Same architecture + same recipe, so normalization
+        # is the remaining PPO-level difference. The exported (JIT/ONNX) policy bakes the
+        # normalizer in, so deploy stays a raw-obs -> action mapping (no deploy change).
+        actor_obs_normalization=True,
+        critic_obs_normalization=True,
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",

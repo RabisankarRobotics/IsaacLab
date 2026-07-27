@@ -29,9 +29,12 @@ Design (same deploy-safe contract as the G1 clean task):
   they are held by their implicit PD — the torso at its default, the arms at the
   randomized target. A manipulation policy owns the arms at deploy.
 * **Asymmetric, deploy-safe actor-critic**: the actor reads only hardware-measurable
-  terms (IMU gyro, IMU tilt, command, gait clock, the 12 leg encoders, last action,
-  and — arm-aware — the 15 upper-body encoders). ``base_lin_vel`` is critic-only.
-* **No observation history** — the policy phase-locks to the 2-value gait clock.
+  terms (IMU gyro, IMU tilt, command, the 12 leg encoders, last action, and — arm-aware
+  — the 15 upper-body encoders). ``base_lin_vel`` is critic-only.
+* **No observation history**; step timing comes from a 2-value ``gait_phase`` clock
+  (restored 2026-07-26 in the full switch to the OFFICIAL Unitree h1_2 recipe, which
+  observes the same sin/cos phase and drives stepping with the ``contact``/``feet_gait``
+  reward, NOT ``feet_air_time``). The clock is frozen at idle so it never marches in place.
 
 Policy observation layout (77), in concat order — a deploy runner must rebuild
 this exactly:
@@ -112,7 +115,8 @@ ARM_JOINT_NAMES = [
 # Upper body the walker OBSERVES (arm-aware): torso + arms = 15 joints.
 UPPER_BODY_JOINT_NAMES = TORSO_JOINT_NAMES + ARM_JOINT_NAMES
 
-# Gait clock period (s). Shared by the feet_gait reward and the gait_phase obs.
+# Gait clock period (s). Shared by the feet_gait/`contact` reward and the gait_phase obs
+# (both restored 2026-07-26 for the official-recipe switch). 0.8 s = official h1_2 period.
 GAIT_PERIOD = 0.8
 
 # Arm-target sample ranges (lo, hi) per joint — the poses the arms are randomized
@@ -238,9 +242,16 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        # 2-value sin/cos gait clock (phase-lock reference for feet_gait). FROZEN AT
-        # IDLE (custom_mdp._gait_phase_scalar): constant while standing, so it does
-        # not drive the "parade" march. A deploy runner mirrors this frozen clock.
+        # GAIT-CLOCK OBSERVATION RESTORED 2026-07-26 (full switch to the OFFICIAL Unitree
+        # h1_2 recipe). The official policy observes a 2-value sin/cos gait phase (the "+2"
+        # in its 47-dim obs) and pairs it with the `contact` reward. This clock is what
+        # gives a memoryless MLP a step-timing reference, and — critically — it makes the
+        # `contact` reward provide a CONSTANT gradient toward lifting the swing foot (a
+        # planted foot loses the swing-window credit every step), which feet_air_time /
+        # feet_swing_height could not (both are identically 0 for a standing robot, so they
+        # reward stepping only AFTER it happens and can't teach it to START). Frozen at idle
+        # (custom_mdp._gait_phase_scalar) + command-gated feet_gait so it does not march in
+        # place. Actor obs 75 -> 77 (critic 78 -> 80). Deploy runner must mirror this clock.
         gait_phase = ObsTerm(func=custom_mdp.gait_phase, params={"period": GAIT_PERIOD})
         joint_pos = ObsTerm(
             func=mdp.joint_pos_rel,
@@ -287,43 +298,61 @@ class ObservationsCfg:
 
 
 # ---------------------------------------------------------------------------
-# Rewards — the G1 clean recipe, adapted to H1_2 legs-only
+# Rewards — STAGE 1 "walk-first": aligned to the proven official h1/g1 biped recipe
+# (2026-07-26). Stripped from 22 active terms to ~16 by removing polish / guessed-param
+# shaping (base_height, the soft-landing pair, air-time-variance) and de-escalating
+# stability weights that were 3-10x the official values; ADDED the -200 termination
+# penalty every official biped config uses. The robot already WALKS (error_vel_xy 0.13)
+# but FALLS (bad_orientation) — this round targets stability, not stepping. Re-add the
+# removed terms in STAGE 2, ONE at a time, with constants MEASURED from a PLAY rollout
+# of the first working walker (never guessed).
 # ---------------------------------------------------------------------------
 @configclass
 class RewardsCfg:
-    # -- task
-    # weight raised 1.0 -> 1.5 (2026-07-25): translation must clearly out-reward the
-    # safe "stand still" optimum. See the feet_air_time / feet_clearance change below.
+    # -- task (weights + std matched to the OFFICIAL Unitree h1_2 config, 2026-07-26)
+    # weight -> 1.0, std -> sqrt(0.25)=0.5 (official tracking_lin_vel=1.0, tracking_sigma=0.25).
+    # LOOSENING std back to 0.5 is a deliberate fix: at std 0.3 a barely-moving robot got
+    # essentially the SAME ~0 tracking reward as a standing one (exp(-0.87^2/0.09)~0 either
+    # way), so there was NO gradient pulling it from "still" toward "moving". At std 0.5 the
+    # same error 0.87->0.5 jumps the reward 0.05->0.37 — a real slope to climb toward walking.
     track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.5,
+        weight=1.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp,
-        weight=1.0,
+        weight=0.5,  # official tracking_ang_vel = 0.5
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
+    # 0.15 = official alive. This IS the survival signal in the official recipe (it has NO
+    # explicit termination penalty — see below); a robot that lives longer accrues more.
     alive = RewTerm(func=mdp.is_alive, weight=0.15)
+    # TERMINATION PENALTY REMOVED 2026-07-26 to match the official recipe (legged_gym h1_2
+    # uses termination = 0). On a robot still learning to step, a large fall penalty
+    # suppresses exactly the risky exploration a first step needs; the official relies on
+    # alive (0.15) + lost future reward instead. Re-add a small one only if it falls too much
+    # once it is walking.
+    # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-100.0)
 
     # -- base / smoothness (joint-wise terms scoped to the actuated legs so we never
-    #    charge the policy for the PD holding the parked torso/arms)
+    #    charge the policy for the PD holding the parked torso/arms). Weights = official h1_2.
+    # -2.0 = official lin_vel_z. (Earlier lowered to -0.2 fearing it flattened the step's
+    # vertical bob; the official proves -2.0 walks — it is NOT the stepping blocker.)
     lin_vel_z = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
     ang_vel_xy = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
-    # joint_vel = RewTerm(
-    #     func=mdp.joint_vel_l2, weight=-0.001,
-    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
-    # )
-    joint_acc = RewTerm(
-        func=mdp.joint_acc_l2, weight=-2.5e-7,
+    # dof_vel -1e-3 = official (restored). Scoped to the legs.
+    joint_vel = RewTerm(
+        func=mdp.joint_vel_l2, weight=-1.0e-3,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
     )
-    # weight loosened -0.05 -> -0.03 (2026-07-25): fall recovery / balance catches need
-    # fast action changes, which this penalty suppresses. Kept meaningful (not zeroed)
-    # so the standing-vibration requirement holds; stand_still handles idle quiet too.
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.015)
+    joint_acc = RewTerm(
+        func=mdp.joint_acc_l2, weight=-2.5e-7,  # dof_acc = official
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
+    )
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.01)  # -0.01 = official
     dof_pos_limits = RewTerm(
-        func=mdp.joint_pos_limits, weight=-5.0,
+        func=mdp.joint_pos_limits, weight=-5.0,  # -5.0 = official h1_2
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES)},
     )
     energy = RewTerm(
@@ -334,59 +363,86 @@ class RewardsCfg:
     # -- posture
     # hip_roll strongly penalized (stops leg splay) but not so hard it chokes strafing;
     # hip_yaw lightly penalized so the policy can still use it to steer.
+    # weights -0.2 / -0.1 = official h1/g1 (were -1.0 / -0.5, i.e. 5x too strong). At 5x
+    # the policy couldn't freely use its hips to catch a stumble / recover a push.
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1.0,
+        weight=-0.2,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint"])},
     )
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.5,
+        weight=-0.1,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"])},
     )
 
-    flat_orientation = RewTerm(func=mdp.flat_orientation_l2, weight=-5.0)
-    # TUNE: H1_2 pelvis rides ~1.0 m (init z 1.05, drops a little with the bent-knee
-    # stance). Verify from a PLAY rollout — read the actual pelvis height and set this.
+    flat_orientation = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)  # -1.0 = official (orientation)
+    # base_height RESTORED 2026-07-26 = official (base_height -10.0, base_height_target 1.0).
+    # The official h1_2 recipe DOES penalize base height and walks fine, so our earlier
+    # "stiff vertical spring" theory was wrong for this robot. TUNE: 1.0 m matches the
+    # official target (robot inits at ~1.05 m); verify the settled walking height in PLAY.
     base_height = RewTerm(func=mdp.base_height_l2, weight=-10.0, params={"target_height": 1.0})
 
-    # -- feet / gait (the natural-walk drivers)
+    # -- feet / gait (the natural-walk drivers) — OFFICIAL Unitree h1_2 recipe (2026-07-26)
+    #
+    # THE STEP-TIMING DRIVER (official `contact`, weight 0.18). RESTORED after the
+    # feet_air_time approach empirically failed (5000 iters, feet_air_time pinned ~0.0015,
+    # error_vel_xy 0.87 — never stepped). This is the term feet_air_time/feet_swing_height
+    # could NOT replace: the gait clock says which foot should be planted vs lifted RIGHT
+    # NOW, and this pays +1 per foot for matching. Crucially its gradient is NON-ZERO for a
+    # standing robot — a planted foot LOSES the swing-window credit every step — so it
+    # actively, continuously pulls the foot up, from a standing start. (feet_air_time only
+    # pays AFTER a step exists, so it couldn't teach the first step.) threshold 0.55 =
+    # official is_stance cutoff. Command-gated (frozen clock) so it never marches in place.
     gait = RewTerm(
         func=custom_mdp.feet_gait,
-        weight=0.5,
+        weight=0.18,  # official `contact` scale
         params={
             "period": GAIT_PERIOD,
-            "offset": [0.0, 0.5],  # anti-phase (alternating steps)
-            "threshold": 0.55,  # stance duty
+            "offset": [0.0, 0.5],  # anti-phase (alternating steps), official offset 0.5
+            "threshold": 0.55,  # stance duty = official is_stance cutoff
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
-    # THE step-driver (added 2026-07-25, from the official H1/G1 recipe). Rewards
-    # SINGLE-SUPPORT air time — it is exactly ZERO while both feet are planted
-    # (single_stance requires one foot in contact) and only pays once the robot lifts
-    # a foot, up to `threshold` s. This is what breaks the "stand perfectly still"
-    # optimum: unlike feet_gait (which hands out ~55% just for matching the stance
-    # phase) and the old feet_clearance (which paid MAX for a planted foot), a stander
-    # earns 0 here. Command-gated, so it never forces stepping while idle.
-    feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
-        weight=0.5,
+    # feet_air_time REMOVED 2026-07-26 (official uses feet_air_time = 0.0). It stayed ~0 for
+    # every run on this robot: it rewards single-support TIME but gives no gradient toward
+    # the FIRST step (identically 0 while double-support), so it can reward stepping but not
+    # teach it. Replaced by the `gait` contact reward above (when-to-step) + feet_swing_height
+    # below (how-high). To re-enable for polish later, use mdp.feet_air_time_positive_biped.
+    #
+    # THE DIRECT FOOT-LIFT FORCER — ported from the OFFICIAL Unitree h1_2 walk recipe
+    # (2026-07-26). This was the piece every previous round lacked: feet_air_time only
+    # rewards TIME in single support, but nothing shaped the swing foot's HEIGHT, so on
+    # this heavy robot the policy could satisfy "single support" with a barely-lifted
+    # scuff (air_time stayed ~0.0001 for 7000 iters). feet_swing_height penalizes
+    # (foot_z - 0.08)^2 for any AIRBORNE foot, so every swing must clear ~8 cm. The
+    # official config runs this at -20; matched here. Planted feet contribute 0 (not
+    # farmable). TUNE: 0.08 m is the official target for this leg — verify in PLAY.
+    feet_swing_height = RewTerm(
+        func=custom_mdp.feet_swing_height,
+        weight=-20.0,
         params={
-            "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.4,
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "target_height": 0.08,
         },
     )
-    # L/R symmetry nudge: penalize variance of air/contact time across the two feet.
-    air_time_variance = RewTerm(
-        func=custom_mdp.air_time_variance_penalty,
-        weight=-1.0,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
-    )
+    # L/R symmetry nudge — REMOVED for the walk-first stage (2026-07-26). At -1.0 this
+    # penalizes asymmetric air/contact time, which suppresses the FIRST tentative (naturally
+    # uneven) steps while the gait is still forming. No official biped uses it. STAGE 2:
+    # re-add to clean up a limp once a stable walk exists.
+    # air_time_variance = RewTerm(
+    #     func=custom_mdp.air_time_variance_penalty,
+    #     weight=-1.0,
+    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
+    # )
+    # -0.2 -> -0.5 (2026-07-26, matching tahiti/hv1_2). Closes the "slide/drag a planted
+    # foot to translate" loophole: to satisfy velocity tracking the base must actually be
+    # carried forward by an AIRBORNE foot (a step), not dragged. Both custom walkers use -0.5.
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-0.2,
+        weight=-0.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
@@ -417,9 +473,9 @@ class RewardsCfg:
     # approach (a contact penalty would be flat until the feet already touch).
     feet_lateral_distance = RewTerm(
         func=custom_mdp.feet_lateral_distance_clearance,
-        weight=-10.0,  # authority lives in the WEIGHT; keep min_distance near half the
-        # natural stance. Move the weight (toward -20 if feet still converge, toward -5
-        # if the strafe turns timid), NOT min_distance.
+        weight=-2.0,  # -10 -> -2 for the walk-first stage: kept as a SAFETY against the feet
+        # crossing (self-collision is off), but de-emphasized so a guessed min_distance can't
+        # dominate the gait. Raise back toward -10 in Stage 2 once min_distance is measured.
         params={
             # TUNE: ~half H1_2's natural stance (wider hips than G1). 0.20 is a first
             # cut; measure the true foot separation at hip_roll=0 in PLAY and set to ~0.5x.
@@ -456,40 +512,30 @@ class RewardsCfg:
     #     },
     # )
 
-    # -- SOFT-LANDING / low ground-force pair (ported from the tuned tahiti_c1 recipe).
-    # Two terms constraining DIFFERENT axes so a quiet, low-impact walk is learned:
-    #
-    #   (1) foot_contact_force  — REACTIVE cap on peak vertical GRF. mdp.contact_forces
-    #       penalizes only the net foot force ABOVE `threshold`, so it never charges the
-    #       policy for the force needed to SUPPORT the robot — only for slam/impact spikes.
-    #       Physics anchor (H1_2 ≈ 67 kg ⇒ weight ≈ 660 N = 1 BW):
-    #         * double-support standing ≈ 330 N / foot,
-    #         * single-support stance   ≈ 660 N / foot (1 BW),
-    #         * healthy human walk peaks ≈ 1.2–1.5 BW,
-    #       so a 1000 N threshold (≈1.5 BW) sits ABOVE normal stance/walk (pays ~0) and
-    #       bites only hard 2–4 BW stomps. TUNE: verify actual peak GRF in a PLAY/MuJoCo
-    #       rollout and lower the threshold toward ~900 N if landings are still loud.
-    foot_contact_force = RewTerm(
-        func=mdp.contact_forces,
-        weight=-2.0e-3,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 1000.0,  # ≈1.5x body weight (TUNE from measured peak GRF)
-        },
-    )
-    #   (2) foot_contact_velocity — UPSTREAM soft-landing shaper. Peak GRF ∝ m·Δv_z/Δt,
-    #       so penalizing the foot's downward speed at touchdown cuts the impulse at its
-    #       cause (a quiet landing), rather than only paying for it after impact like (1).
-    #       Small weight so it shapes touchdown without freezing stance micro-motion.
-    foot_contact_velocity = RewTerm(
-        func=custom_mdp.foot_contact_velocity_penalty,
-        weight=-0.5,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "force_threshold": 5.0,  # contact DETECTOR only (not a force cap)
-        },
-    )
+    # -- SOFT-LANDING / low ground-force pair — REMOVED for the walk-first stage (2026-07-26).
+    # Both are polish (a quiet, low-impact walk) and no official biped config uses them.
+    # foot_contact_velocity (-0.5) in particular penalizes the foot's vertical speed IN
+    # contact — the fast foot motion a push-off / fall-catch needs — so it works against
+    # learning a robust walk. STAGE 2: re-add BOTH once a stable walk exists, with the force
+    # threshold MEASURED from a PLAY/MuJoCo peak-GRF rollout (not the 1000 N guess). Physics
+    # anchor kept for that step: H1_2 ≈ 67 kg ⇒ ~660 N = 1 BW; walk peaks ≈ 1.2-1.5 BW.
+    # foot_contact_force = RewTerm(
+    #     func=mdp.contact_forces,
+    #     weight=-2.0e-3,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #         "threshold": 1000.0,  # TUNE from measured peak GRF
+    #     },
+    # )
+    # foot_contact_velocity = RewTerm(
+    #     func=custom_mdp.foot_contact_velocity_penalty,
+    #     weight=-0.5,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+    #         "force_threshold": 5.0,
+    #     },
+    # )
 
     # -- idle: kill the "parade" march / standing vibration. Penalize leg deviation
     #    from the default stance while standing (command ~ 0). This is the primary
@@ -553,28 +599,19 @@ class EventCfg:
             "operation": "add",
         },
     )
-    # +3 kg EE PAYLOAD DR — the "stable pick-and-place without affecting balance"
-    # requirement. Up to +3 kg is added to EACH wrist/hand link (the fingerless walk
-    # asset merged the hand + finger inertia into *_wrist_yaw_link, so this is the
-    # single rigid EE body). Modeling it per-hand covers the worst case (a heavy object
-    # in each hand); halve the upper bound if only one shared object is ever carried.
-    #
-    # STAGED 2026-07-25 — mode changed startup -> reset and the range starts at (0,0),
-    # grown 0 -> 3 kg by the `payload_mass_levels` curriculum. We had staged the PUSH
-    # disturbance but left this +3 kg payload (swung by the arm-motion DR every 3-5 s)
-    # at full strength from iter 0, so the robot was learning to WALK while balancing a
-    # heavy, arm-swung payload — too much at once, and a driver of the falls. Reset mode
-    # re-samples the payload each episode from the current (growing) range; the mass DR
-    # re-derives from default_mass each call so it does not compound.
-    add_ee_payload = EventTerm(
-        func=mdp.randomize_rigid_body_mass,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_wrist_yaw_link"),
-            "mass_distribution_params": (0.0, 0.0),  # grown to (0, 3) by payload_mass_levels
-            "operation": "add",
-        },
-    )
+    # +3 kg EE PAYLOAD DR — REMOVED for the walk-first stage (2026-07-26, user request:
+    # "remove hand payload for now, first walk then manipulation DR"). Carrying a heavy,
+    # arm-swung object while ALSO trying to discover a gait was one disturbance too many.
+    # Re-add this (staged via payload_mass_levels) only AFTER a confirmed stable walk.
+    # add_ee_payload = EventTerm(
+    #     func=mdp.randomize_rigid_body_mass,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*_wrist_yaw_link"),
+    #         "mass_distribution_params": (0.0, 0.0),  # grown to (0, 3) by payload_mass_levels
+    #         "operation": "add",
+    #     },
+    # )
     base_external_force_torque = EventTerm(
         func=mdp.apply_external_force_torque,
         mode="reset",
@@ -604,37 +641,37 @@ class EventCfg:
         mode="reset",
         params={"position_range": (1.0, 1.0), "velocity_range": (-0.5, 0.5)},
     )
-    # Pin the TORSO target to its default at reset (the legs-only action term never
-    # writes it, and the framework inits every target to 0). The arms are handled
-    # separately by the randomizer below.
-    hold_torso_target = EventTerm(
+    # WALK-FIRST 2026-07-26: pin the ENTIRE upper body (torso + arms) at its default
+    # ready-pose, PD-held. The arm-motion DR and the +3 kg EE payload were BOTH removed
+    # for now (user: "remove hand payload for now, first walk then manipulation DR") so
+    # the robot learns a clean legs-only walk with zero manipulation disturbance — this
+    # is exactly the official Unitree h1_2 setup (arms held at a fixed default, no arm
+    # randomization). The arm-motion DR + payload are RE-ADDED (staged) only AFTER a
+    # confirmed stable walk. The two randomize_arm_joint_targets events below are kept,
+    # commented out, for that step.
+    hold_upper_body_target = EventTerm(
         func=custom_mdp.hold_joint_targets_at_default,
         mode="reset",
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=TORSO_JOINT_NAMES)},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=UPPER_BODY_JOINT_NAMES)},
     )
-    # ARM-MOTION DR (reset): sample a fresh arm pose each episode. Declared AFTER
-    # hold_torso_target so it owns the arm targets. This is what forces the legs to
-    # balance a variety of static arm poses (both hands forward, out to the side, etc.).
-    randomize_arm_targets_reset = EventTerm(
-        func=custom_mdp.randomize_arm_joint_targets,
-        mode="reset",
-        params={
-            "position_range": ARM_TARGET_RANGES,
-            "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
-        },
-    )
-    # ARM-MOTION DR (interval): re-randomize the arm target mid-episode, so the legs
-    # must reject a LIVE, moving CoM shift (not just a static hold) — the disturbance
-    # a manipulation policy actually creates while reaching.
-    randomize_arm_targets_interval = EventTerm(
-        func=custom_mdp.randomize_arm_joint_targets,
-        mode="interval",
-        interval_range_s=(3.0, 5.0),
-        params={
-            "position_range": ARM_TARGET_RANGES,
-            "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
-        },
-    )
+    # ARM-MOTION DR — DISABLED for the walk-first stage (re-enable after a stable walk).
+    # randomize_arm_targets_reset = EventTerm(
+    #     func=custom_mdp.randomize_arm_joint_targets,
+    #     mode="reset",
+    #     params={
+    #         "position_range": ARM_TARGET_RANGES,
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
+    #     },
+    # )
+    # randomize_arm_targets_interval = EventTerm(
+    #     func=custom_mdp.randomize_arm_joint_targets,
+    #     mode="interval",
+    #     interval_range_s=(3.0, 5.0),
+    #     params={
+    #         "position_range": ARM_TARGET_RANGES,
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
+    #     },
+    # )
     # PUSH DR — starts at ZERO and is grown by ``custom_mdp.push_velocity_levels``
     # only once the robot survives full episodes.
     #
@@ -661,26 +698,29 @@ class EventCfg:
 # ---------------------------------------------------------------------------
 @configclass
 class CurriculumCfg:
-    # FIXED 3-phase command schedule (ported from the tuned tahiti_c1 recipe), NOT the
-    # performance-gated lin/ang_vel_cmd_levels. Those gates deadlocked the 10 000-iter
-    # run: a robot that falls early can never clear a per-episode tracking-quality
-    # threshold, so the command range stayed pinned at lin=0.1/ang=0.2 forever. A
-    # fixed schedule can't stall — the command grows on a known iteration timeline, so
-    # the robot always gets a reason to start stepping.
-    #   Phase 1 (iter 0 .. stand):  zero command, 100% standing envs (learn to stand).
-    #   Phase 2 (stand .. slow):    command x 0.3, 30% standing (slow walk).
-    #   Phase 3 (>= slow):          full command, 10% standing.
+    # PURE-STAND PHASE REMOVED 2026-07-26 — this was the standing ATTRACTOR. The official
+    # Unitree h1_2 recipe has NO stand-first curriculum: it demands walking (full command
+    # + push) from iter 0, so the robot never learns "stand still" as a deep optimum. Our
+    # 2000-iter zero-command Phase 1 (100% standing envs) trained a strong standing prior,
+    # and by the time full command arrived the MLP was stuck in that basin and never
+    # stepped (feet_air_time ~0 for the whole run, even at full command in Phase 3). Fix:
+    # start command immediately. stand_until_iters 2000 -> 0 (skip Phase 1 entirely) and a
+    # short slow ramp slow_until_iters 5000 -> 1000, so the robot is commanded to slow-walk
+    # from iter 0 and reaches full command by iter 1000. It WILL fall a lot early (like the
+    # official does) — that is how it discovers stepping. A fixed schedule still can't stall.
+    #   Phase 2 (iter 0 .. 1000):   command x 0.3, 30% standing (slow walk from the start).
+    #   Phase 3 (>= 1000):          full command, 10% standing.
     # *_full ranges MUST equal commands.base_velocity.limit_ranges below.
     command_phase = CurrTerm(
         func=custom_mdp.stand_to_walk_command_curriculum,
         params={
-            "stand_until_iters": 2000,  # TUNE — user proposed 3000; 2000 is tahiti-proven
-            "slow_until_iters": 5000,   # TUNE — Phase 2 spans iters 2000..5000
+            "stand_until_iters": 0,     # no pure-stand phase (was 2000 — the standing attractor)
+            "slow_until_iters": 1000,   # short slow ramp; full command from iter 1000 (was 5000)
             "slow_scale": 0.3,
             "lin_vel_x_full": (-0.5, 1.0),  # == limit_ranges.lin_vel_x
             "lin_vel_y_full": (-0.5, 0.5),  # == limit_ranges.lin_vel_y
             "ang_vel_z_full": (-0.5, 0.5),  # == limit_ranges.ang_vel_z
-            "rel_standing_envs_phase1": 1.0,
+            "rel_standing_envs_phase1": 1.0,  # unused now (Phase 1 skipped)
             "rel_standing_envs_phase2": 0.3,
             "rel_standing_envs_phase3": 0.1,
         },
@@ -700,20 +740,18 @@ class CurriculumCfg:
     #         "start_after_iters": 2000,  # == command_phase stand_until_iters
     #     },
     # )
-    # EE-PAYLOAD curriculum (2026-07-25): keep the payload at 0 while the robot learns
-    # to walk (Phase 1 stand + Phase 2 slow walk), then ramp 0 -> 3 kg per hand across
-    # iters 5000..9000 (Phase 3), so it consolidates a stable full-speed walk before it
-    # must also carry a heavy, arm-swung object. Requires add_ee_payload to be mode=
-    # "reset". Re-tune start/full iters if the walk needs longer to stabilise first.
-    payload_mass_levels = CurrTerm(
-        func=custom_mdp.payload_mass_levels,
-        params={
-            "term_name": "add_ee_payload",
-            "start_iters": 5000,  # begin ramp at Phase 3 (full-speed walk)
-            "full_iters": 9000,   # reach full +3 kg by iter 9000, 1000 iters to consolidate
-            "max_mass": 3.0,
-        },
-    )
+    # EE-PAYLOAD curriculum REMOVED 2026-07-26 — the payload event itself is disabled for
+    # the walk-first stage (see EventCfg.add_ee_payload). Re-add both together, staged, once
+    # a stable walk is confirmed.
+    # payload_mass_levels = CurrTerm(
+    #     func=custom_mdp.payload_mass_levels,
+    #     params={
+    #         "term_name": "add_ee_payload",
+    #         "start_iters": 5000,
+    #         "full_iters": 9000,
+    #         "max_mass": 3.0,
+    #     },
+    # )
 
 
 # ---------------------------------------------------------------------------
@@ -755,16 +793,12 @@ class H1_2FlatLegsEnvCfg_PLAY(H1_2FlatLegsEnvCfg):
         self.scene.env_spacing = 2.5
         # clean demo: no observation noise
         self.observations.policy.enable_corruption = False
-        # keep arm randomization + EE payload ON so the demo shows the walk rejecting
-        # arm motion and payload — the whole point of this task. Disable pushes only
-        # (raise velocity_range here to whatever push level training actually reached
-        # if you want to demo disturbance rejection).
+        # Walk-first stage: arms are held at default and there is no EE payload (both the
+        # arm-motion DR and payload are disabled in the base cfg), so PLAY just demos the
+        # clean legs-only walk. Disable pushes for the demo.
         self.events.push_robot = None
         # play at the fully-grown command range (skip the curriculum ramp)
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.curriculum.command_phase = None
-        # push_velocity_levels is disabled in the base cfg (push off until it walks)
-        # Payload: the curriculum grows it during training; in PLAY skip the ramp and
-        # demo at the full +3 kg so the walk is shown rejecting a loaded EE.
-        self.curriculum.payload_mass_levels = None
-        self.events.add_ee_payload.params["mass_distribution_params"] = (0.0, 3.0)
+        # push_velocity_levels / payload_mass_levels / add_ee_payload are all disabled in
+        # the base cfg for the walk-first stage — nothing to override here.

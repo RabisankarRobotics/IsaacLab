@@ -31,10 +31,13 @@ Design (same deploy-safe contract as the G1 clean task):
 * **Asymmetric, deploy-safe actor-critic**: the actor reads only hardware-measurable
   terms (IMU gyro, IMU tilt, command, the 12 leg encoders, last action, and — arm-aware
   — the 15 upper-body encoders). ``base_lin_vel`` is critic-only.
-* **No observation history**; step timing comes from a 2-value ``gait_phase`` clock
-  (restored 2026-07-26 in the full switch to the OFFICIAL Unitree h1_2 recipe, which
-  observes the same sin/cos phase and drives stepping with the ``contact``/``feet_gait``
-  reward, NOT ``feet_air_time``). The clock is frozen at idle so it never marches in place.
+* **No observation history**; step timing comes from a 2-value ``gait_phase`` clock (the
+  sin/cos phase from the official Unitree h1_2 recipe), frozen at idle so it never marches
+  in place. Stepping is driven by ``feet_air_time_positive_biped`` (re-added 2026-07-27 — the
+  positive "swing carrot" our own MLP walkers use), with ``feet_gait`` as a light timing
+  shaper. (The 5.6k server run showed the gait/``feet_swing_height`` pair balanced the robot
+  but never lifted a foot — no term gave a *standing* robot a reward it was missing; the
+  air-time carrot is exactly 0 in double support, so it pulls the policy OUT of standing.)
 
 Policy observation layout (77), in concat order — a deploy runner must rebuild
 this exactly:
@@ -322,7 +325,7 @@ class RewardsCfg:
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp,
-        weight=0.5,  # official tracking_ang_vel = 0.5
+        weight=1.0,  # official tracking_ang_vel = 0.5
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     # 0.15 = official alive. This IS the survival signal in the official recipe (it has NO
@@ -405,29 +408,46 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
-    # feet_air_time REMOVED 2026-07-26 (official uses feet_air_time = 0.0). It stayed ~0 for
-    # every run on this robot: it rewards single-support TIME but gives no gradient toward
-    # the FIRST step (identically 0 while double-support), so it can reward stepping but not
-    # teach it. Replaced by the `gait` contact reward above (when-to-step) + feet_swing_height
-    # below (how-high). To re-enable for polish later, use mdp.feet_air_time_positive_biped.
-    #
-    # THE DIRECT FOOT-LIFT FORCER — ported from the OFFICIAL Unitree h1_2 walk recipe
-    # (2026-07-26). This was the piece every previous round lacked: feet_air_time only
-    # rewards TIME in single support, but nothing shaped the swing foot's HEIGHT, so on
-    # this heavy robot the policy could satisfy "single support" with a barely-lifted
-    # scuff (air_time stayed ~0.0001 for 7000 iters). feet_swing_height penalizes
-    # (foot_z - 0.08)^2 for any AIRBORNE foot, so every swing must clear ~8 cm. The
-    # official config runs this at -20; matched here. Planted feet contribute 0 (not
-    # farmable). TUNE: 0.08 m is the official target for this leg — verify in PLAY.
-    feet_swing_height = RewTerm(
-        func=custom_mdp.feet_swing_height,
-        weight=-20.0,
+    # THE MISSING CARROT — feet_air_time_positive_biped, RE-ADDED 2026-07-27.
+    # Diagnosis from the 5.6k-iter SERVER run (4096 env, obs-normalization ON): the robot now
+    # BALANCES well (ep len 938/1000, bad_orientation only 16%) but STILL won't step —
+    # feet_swing_height logged at EXACTLY -0.0000 (the feet literally never leave the ground)
+    # and error_vel_xy stuck at 0.80 at full command. Root cause: not one stepping term gives a
+    # STANDING robot a positive reward it is MISSING. `gait` pays a stander ~55% for free
+    # (stance-window match); `feet_swing_height` is a PURE PENALTY — 0 while planted, and it only
+    # ever COSTS the instant a foot lifts, so it is a BARRIER to the first tentative step, not a
+    # driver (the 0.0 in the log is the proof: the policy simply avoids it by never lifting). A
+    # well-balanced robot then has every incentive to stay planted. This term is the carrot our
+    # OWN two MLP walkers (tahiti_c1 w=2.5, hv1_2 w=1.0) use: it is EXACTLY 0 in double support
+    # and grows with real single-support swing TIME, so a stander is visibly leaving reward on
+    # the table and the gradient points OUT of standing. Command-gated (|cmd|>0.1) so it can't be
+    # farmed by marching at idle. The earlier "air_time never worked" rounds were ALL
+    # pre-obs-normalization — obs were unlearnable-conditioned, so no reward could step it; with
+    # obs-norm ON and balance already solved, the carrot can finally do its job.
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_positive_biped,
+        weight=2.0,  # strong on purpose — must beat a DEEP standing basin. tahiti 2.5 / hv1_2 1.0.
         params={
+            "command_name": "base_velocity",
+            "threshold": 0.4,  # reward single-support up to 0.4 s (a real step, not a foot-tap)
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "target_height": 0.08,
         },
     )
+    # feet_swing_height DISABLED 2026-07-27 — the 5.6k run logged it at EXACTLY -0.0000, i.e. it
+    # forced NOTHING: as a penalty that only applies to an AIRBORNE foot it is inert for a planted
+    # robot and becomes a BARRIER to the exploratory first lift (any height != 0.08 m costs
+    # -20*(z-0.08)^2). It shapes swing HEIGHT of an ALREADY-stepping gait (which is how the
+    # official LSTM recipe can afford -20). Re-add SMALL (~ -1) for clearance polish AFTER a
+    # confirmed walk; for now it only fights the air_time carrot above.
+    # feet_swing_height = RewTerm(
+    #     func=custom_mdp.feet_swing_height,
+    #     weight=-20.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+    #         "target_height": 0.08,
+    #     },
+    # )
     # L/R symmetry nudge — REMOVED for the walk-first stage (2026-07-26). At -1.0 this
     # penalizes asymmetric air/contact time, which suppresses the FIRST tentative (naturally
     # uneven) steps while the gait is still forming. No official biped uses it. STAGE 2:

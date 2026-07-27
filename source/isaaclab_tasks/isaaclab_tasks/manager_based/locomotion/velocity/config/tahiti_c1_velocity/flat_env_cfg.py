@@ -52,9 +52,19 @@ class TahitiC1VelocityActionsCfg:
       ankle_roll (L, R): 0.10  — reduced authority damps ankle-roll vibration
       all other joints:  0.25
     Any change here must be mirrored in deploy/config/policy.yaml.
+
+    2026-07-28 Round Vibration (V1): switched to NoisyJointPositionActionCfg
+    to inject ±0.02 rad (~1.15°) uniform noise on the joint pos target every
+    step. Attacks the sim-to-real vibration gap: real robot jitters during
+    walking from PID inner-loop chatter + gearbox backlash + comm timing —
+    none of which Isaac/MuJoCo simulate. Training with target-level noise
+    teaches the policy to be robust to those disturbances rather than
+    adding another reward smoothness term (which would trade vibration for
+    weaker gait authority). Deploy-side sees no change; the actuator noise
+    is training-only.
     """
 
-    joint_pos = mdp.JointPositionActionCfg(
+    joint_pos = custom_mdp.NoisyJointPositionActionCfg(
         asset_name="robot",
         joint_names=LEG_JOINTS,
         # Patterns must be mutually exclusive — Isaac Lab's resolver rejects
@@ -69,6 +79,7 @@ class TahitiC1VelocityActionsCfg:
             ".*_ankle_roll_joint": 0.10,
         },
         use_default_offset=True,
+        noise_range=(-0.02, 0.02),
     )
 
 
@@ -206,9 +217,17 @@ class TahitiC1VelocityRewardsCfg:
     # now that those are relaxed, the variance penalty can drive symmetry
     # without forcing a policy collapse. Attacks the L/R rolling-window gap
     # at cycle scale, not instantaneous.
+    # 2026-07-28 Round Vibration (Option A, limp fix): -5.0 → -15.0. MuJoCo
+    # post-P1-P6 showed asym still 13 % (air L 0.27 / R 0.24, knee_amp L 0.58 /
+    # R 0.51). Math: 13 % gap → variance ≈ 6e-4, times -5 = -0.003/step —
+    # invisible against tracking (+2.5) and air_time (+0.4-1.0). 3× bump
+    # raises signal to -0.009/step, same order as smoothness terms so the
+    # gradient can actually shape symmetry. Function already covers both air
+    # AND contact time variance; no new code needed. If asym still >5 % at
+    # 25k, add stride-scale knee_amp_variance (Option B).
     feet_airtime_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        weight=-5.0,
+        weight=-15.0,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     foot_clearance = RewTerm(
@@ -267,7 +286,14 @@ class TahitiC1VelocityRewardsCfg:
     # bottomed at 0.911 (target 0.910), so -3.5 was doing its job but the same
     # over-penalization signature (action_std ↑, tracking ↓) affects this. Trim
     # 15 % back — pelvis lean stays under control without dominating.
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-3.0)
+    # 2026-07-28 Round Vibration (W3): -3.0 → -2.0. Fights backward-walk fall.
+    # Backward walk needs a small rearward pelvic tilt for stability (human
+    # walkers do the same), but -3.0 punishes any tilt strongly enough to
+    # force a flat posture even during backward decel. At -2.0 the policy
+    # can adopt the ±3-4° base pitch needed for backward push/brake without
+    # runaway lean — pair with the wider push DR (W2 planned but not yet
+    # applied) if backward stability still short at 25k iters.
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
     # Below-target base height only — free to stand tall. 0.85 m is 5 cm below
     # the settled ~0.90 m stance height, so normal walking pays 0, only real
     # crouching or falling registers.
@@ -533,10 +559,17 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # starts mid-perturbation, not from near-still. Forces the policy to
         # build a recovery reflex, not just a start-from-still reflex —
         # complements the push_robot bump and CoM DR for backward-walk balance.
+        # 2026-07-28 Round Vibration (W1): x-vel range (-0.3, 0.3) → (-0.5, 0.2).
+        # Backward-biased. MuJoCo showed robot cannot recover from small
+        # backward velocities — under-samples backward-recovery training
+        # because forward starts survive longer per episode. Now ~70 % of
+        # resets begin with x-velocity ≤ 0 → policy sees "started moving
+        # backward, control it" as a primary training scenario, not an edge
+        # case. Y and rotational ranges kept symmetric.
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (-0.3, 0.3), "y": (-0.3, 0.3), "z": (-0.3, 0.3),
+                "x": (-0.5, 0.2), "y": (-0.3, 0.3), "z": (-0.3, 0.3),
                 "roll": (-0.3, 0.3), "pitch": (-0.3, 0.3), "yaw": (-0.3, 0.3),
             },
         }

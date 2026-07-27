@@ -314,3 +314,43 @@ def stand_to_walk_command_curriculum(
         phase = 3.0
 
     return torch.tensor(phase, device=env.device)
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-28 Round Vibration (V1): action-noise wrapper for JointPositionAction.
+# Real hardware jitters during walking in ways MuJoCo/Isaac don't reproduce
+# (PID inner-loop chatter, gearbox backlash, comm-timing wobble). Injecting
+# small uniform noise on the joint-position TARGET each step trains the policy
+# to be robust to those sources without another reward tweak.
+# ---------------------------------------------------------------------------
+from isaaclab.envs.mdp.actions.actions_cfg import JointPositionActionCfg
+from isaaclab.envs.mdp.actions.joint_actions import JointPositionAction
+from isaaclab.managers.action_manager import ActionTerm
+from isaaclab.utils import configclass
+
+
+class NoisyJointPositionAction(JointPositionAction):
+    """JointPositionAction that adds uniform noise on the joint pos target.
+
+    Noise is applied AFTER scale/offset/clip so ``noise_range`` is in radians
+    on the target sent to the actuator — the same units as real hardware
+    jitter.
+    """
+
+    cfg: "NoisyJointPositionActionCfg"
+
+    def process_actions(self, actions: torch.Tensor):
+        super().process_actions(actions)
+        noise = torch.empty_like(self._processed_actions).uniform_(
+            self.cfg.noise_range[0], self.cfg.noise_range[1]
+        )
+        self._processed_actions = self._processed_actions + noise
+
+
+@configclass
+class NoisyJointPositionActionCfg(JointPositionActionCfg):
+    """Config for :class:`NoisyJointPositionAction`."""
+
+    class_type: type[ActionTerm] = NoisyJointPositionAction
+    noise_range: tuple[float, float] = (-0.02, 0.02)
+    """Uniform noise range in radians added to the joint pos target each step."""

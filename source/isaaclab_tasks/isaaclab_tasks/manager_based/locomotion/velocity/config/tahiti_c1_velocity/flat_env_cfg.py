@@ -194,13 +194,22 @@ class TahitiC1VelocityRewardsCfg:
     # a real ceiling on vertical push. With that ceiling in place, air_time
     # weight can climb again without producing 5× BW landings — the two
     # rewards constrain different axes (temporal vs force).
+    # 2026-07-28 Round Long-Stride (Option 1): weight 2.5 → 3.5, threshold
+    # 0.4 → 0.55. Attacks short-horizontal-stride problem. Threshold 0.55 s
+    # ≈ realistic human single-stance duration (~0.9 Hz cadence); prior 0.4 s
+    # capped reward on short high-cadence stepping. Weight bump raises max
+    # per-step reward from 1.0 to ~1.9, doubling payoff for long single
+    # stances — longer single stance = more time for the swing hip to rotate
+    # forward before landing = longer horizontal reach. Foot_clearance target
+    # 0.06 m + foot_contact_velocity + contact_force cap 850 N should stop
+    # the policy from cashing this by hovering vertically.
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=2.5,
+        weight=3.5,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.4,
+            "threshold": 0.55,
         },
     )
     feet_slide = RewTerm(
@@ -217,17 +226,18 @@ class TahitiC1VelocityRewardsCfg:
     # now that those are relaxed, the variance penalty can drive symmetry
     # without forcing a policy collapse. Attacks the L/R rolling-window gap
     # at cycle scale, not instantaneous.
-    # 2026-07-28 Round Vibration (Option A, limp fix): -5.0 → -15.0. MuJoCo
-    # post-P1-P6 showed asym still 13 % (air L 0.27 / R 0.24, knee_amp L 0.58 /
-    # R 0.51). Math: 13 % gap → variance ≈ 6e-4, times -5 = -0.003/step —
-    # invisible against tracking (+2.5) and air_time (+0.4-1.0). 3× bump
-    # raises signal to -0.009/step, same order as smoothness terms so the
-    # gradient can actually shape symmetry. Function already covers both air
-    # AND contact time variance; no new code needed. If asym still >5 % at
-    # 25k, add stride-scale knee_amp_variance (Option B).
+    # 2026-07-28: reverted from -15 back to -5. The -15 experiment (Option A)
+    # made the variance term dominant enough that the CHEAPEST way for the
+    # policy to zero it out was to take tiny symmetric steps (air time ~0,
+    # variance ~0). Killed stride length: feet_air_time reward dropped from
+    # ~0.5 to 0.14 (14 % of max). Lesson: variance-only pressure has a
+    # degenerate optimum at "no gait" — must be paired with a MIN air-time
+    # counter-force before bumping again. Next attempt (if the limp comes
+    # back at -5) will bump `feet_air_time` weight in parallel, or add a
+    # stride-length reward that variance can't game.
     feet_airtime_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        weight=-15.0,
+        weight=-5.0,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     foot_clearance = RewTerm(
@@ -286,14 +296,14 @@ class TahitiC1VelocityRewardsCfg:
     # bottomed at 0.911 (target 0.910), so -3.5 was doing its job but the same
     # over-penalization signature (action_std ↑, tracking ↓) affects this. Trim
     # 15 % back — pelvis lean stays under control without dominating.
-    # 2026-07-28 Round Vibration (W3): -3.0 → -2.0. Fights backward-walk fall.
-    # Backward walk needs a small rearward pelvic tilt for stability (human
-    # walkers do the same), but -3.0 punishes any tilt strongly enough to
-    # force a flat posture even during backward decel. At -2.0 the policy
-    # can adopt the ±3-4° base pitch needed for backward push/brake without
-    # runaway lean — pair with the wider push DR (W2 planned but not yet
-    # applied) if backward stability still short at 25k iters.
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)
+    # 2026-07-28: reverted from -2 back to -3. The -2 experiment (W3) let the
+    # policy discover a "shopping-cart" forward-lean gait — lean forward, drag
+    # feet in tiny steps, cash tracking reward without needing real stride
+    # (this compounded with the Option A variance bump). A symmetric relaxation
+    # affects both directions and the forward direction wins the local search.
+    # For backward-walk stability, a DIRECTIONAL orientation term (soft on
+    # rearward tilt only) is the correct approach, not a symmetric weight cut.
+    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=-3.0)
     # Below-target base height only — free to stand tall. 0.85 m is 5 cm below
     # the settled ~0.90 m stance height, so normal walking pays 0, only real
     # crouching or falling registers.
@@ -313,7 +323,7 @@ class TahitiC1VelocityRewardsCfg:
     # problem. Complements the new foot_contact_velocity term (P6) which
     # attacks foot-specific chatter.
     dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-4.0e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.010)
+    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.015)
 
     # ---- safety --------------------------------------------------------
     is_alive = RewTerm(func=mdp.is_alive, weight=0.05)
@@ -521,8 +531,8 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         # offset compounds the already-marginal heel-loaded backward stance.
         self.events.base_com.params["asset_cfg"].body_names = "base_link"
         self.events.base_com.params["com_range"] = {
-            "x": (-0.04, 0.04),
-            "y": (-0.04, 0.04),
+            "x": (-0.03, 0.03),
+            "y": (-0.03, 0.03),
             "z": (-0.03, 0.03),
         }
 

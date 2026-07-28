@@ -194,22 +194,28 @@ class TahitiC1VelocityRewardsCfg:
     # a real ceiling on vertical push. With that ceiling in place, air_time
     # weight can climb again without producing 5× BW landings — the two
     # rewards constrain different axes (temporal vs force).
-    # 2026-07-28 Round Long-Stride (Option 1): weight 2.5 → 3.5, threshold
-    # 0.4 → 0.55. Attacks short-horizontal-stride problem. Threshold 0.55 s
-    # ≈ realistic human single-stance duration (~0.9 Hz cadence); prior 0.4 s
-    # capped reward on short high-cadence stepping. Weight bump raises max
-    # per-step reward from 1.0 to ~1.9, doubling payoff for long single
-    # stances — longer single stance = more time for the swing hip to rotate
-    # forward before landing = longer horizontal reach. Foot_clearance target
-    # 0.06 m + foot_contact_velocity + contact_force cap 850 N should stop
-    # the policy from cashing this by hovering vertically.
+    # 2026-07-28 Round Long-Stride (Option 1) REVERTED. Bumped weight 2.5→3.5
+    # and threshold 0.4→0.55 to reward longer single-stance duration.
+    # Regression on every axis vs prior run: L peak force 3.87→4.33×BW, air-
+    # time asym 13%→18%, knee_amp reached 1.41 rad (81°) — classic vertical
+    # parade. Root cause: feet_air_time is a SCALAR duration term with no
+    # direction bias. Making the max-per-step payoff larger and the
+    # saturation later gave the policy more room to farm it VERTICALLY
+    # (knee-driven lift keeps foot off ground longer with less base motion
+    # than a real forward push, which is metabolically cheap for the policy
+    # to learn first). foot_clearance target + foot_contact_velocity did NOT
+    # stop it — those cap the peak height and the touchdown speed, not the
+    # knee flexion during swing. Reverted to 2.5 / 0.4. Horizontal-stride
+    # push must come from a DIRECTIONAL term (Option 2: hip_pitch_swing
+    # amplitude, or a base-forward-progress-per-step reward) — attempting
+    # that only after this revert lands.
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
-        weight=3.5,
+        weight=2.5,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-            "threshold": 0.55,
+            "threshold": 0.4,
         },
     )
     feet_slide = RewTerm(
@@ -218,6 +224,31 @@ class TahitiC1VelocityRewardsCfg:
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+        },
+    )
+    # 2026-07-28 Round Long-Stride (Option 2): directional stride-amplitude
+    # reward. Pays |L_hip_pitch - R_hip_pitch| capped at 0.6 rad — a real
+    # walking gait keeps hips opposed (one forward, one back), so this
+    # differential tracks stride length directly. The vertical-parade
+    # failure mode co-flexes both hips to lift the knees, driving the
+    # differential toward zero, so this term explicitly punishes parade
+    # shape. Gated by cmd>0.1 m/s AND at least one foot currently airborne
+    # (>50 ms) — cannot be farmed by standing hip-flex or static split
+    # stance. Weight 0.5 is conservative: max per-step raw = 0.6, so
+    # per-episode ceiling with 70 % moving, 50 % swinging, 1000 steps ~ a
+    # few tenths, comparable to feet_air_time. Bump to 0.75-1.0 if the
+    # stride doesn't lengthen after 10k iters and other terms are healthy.
+    hip_pitch_swing = RewTerm(
+        func=custom_mdp.hip_pitch_swing_amplitude,
+        weight=0.5,
+        params={
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["left_hip_pitch_joint", "right_hip_pitch_joint"],
+                preserve_order=True,
+            ),
         },
     )
     # 2026-07-18 Round HW: -3.0 → -5.0. V4@20k showed limping walk (one leg

@@ -236,6 +236,54 @@ def leg_symmetry_l1(
     return diff.sum(dim=1)
 
 
+def hip_pitch_swing_amplitude(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg,
+    max_amplitude: float = 0.6,
+    cmd_threshold: float = 0.1,
+    swing_threshold: float = 0.05,
+) -> torch.Tensor:
+    """Reward |L_hip_pitch - R_hip_pitch| — horizontal-stride shaper.
+
+    A real walking gait keeps one hip flexed forward while the other
+    extends back, so the L-R hip-pitch differential tracks stride length
+    directly. The vertical-parade failure mode flexes BOTH hips together
+    to lift the knees, driving the differential toward zero — this term
+    punishes that shape by paying only when hips are opposed.
+
+    Gated to prevent farming:
+    - ``cmd_threshold``: no reward when there is no commanded motion, so a
+      standing robot cannot split its stance for free reward.
+    - ``swing_threshold``: no reward unless at least one foot is currently
+      in the air (``current_air_time`` above threshold), so a moving robot
+      cannot hold a static split stance for free either.
+
+    Capped at ``max_amplitude`` (rad) — prevents the policy from cashing
+    more reward by driving hip pitches to their travel limits and getting
+    stuck at the joint ends. 0.6 rad ≈ 34° per hip, matching a healthy
+    walking stride's peak hip-pitch swing (Winter's gait data).
+
+    ``asset_cfg.joint_ids`` MUST resolve to exactly two joint ids in the
+    order (L_hip_pitch, R_hip_pitch). Set with ``preserve_order=True``.
+    """
+    from isaaclab.sensors import ContactSensor
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    diff = torch.clamp(torch.abs(joint_pos[:, 0] - joint_pos[:, 1]), max=max_amplitude)
+
+    cmd = env.command_manager.get_command(command_name)
+    moving = (torch.norm(cmd[:, :2], dim=1) > cmd_threshold).float()
+
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    current_air = sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    swinging = (current_air.max(dim=1)[0] > swing_threshold).float()
+
+    return diff * moving * swinging
+
+
 def stand_to_walk_command_curriculum(
     env: "ManagerBasedRLEnv",
     env_ids,

@@ -420,7 +420,9 @@ def main():
         default="/home/rabisankar/IsaacLab/deploy/mujoco/tahiti_c1_scene.xml",
         help="MJCF scene file (includes tahiti_c1.xml).",
     )
-    parser.add_argument("--duration", type=float, default=120.0, help="Sim duration in seconds.")
+    parser.add_argument("--duration", type=float, default=0.0,
+                        help="Sim duration in seconds. 0 or negative = run until "
+                             "viewer window is closed (Ctrl+C also stops).")
     parser.add_argument("--base_height", type=float, default=None,
                         help="Override initial pelvis z (default = keyframe value).")
     parser.add_argument("--realtime", action="store_true", default=True,
@@ -682,7 +684,7 @@ def main():
         # the first noisy startup interval.
         last_print_wall_t = start
         last_print_sim_t = 0.0
-        while viewer.is_running() and time.time() - start < args.duration:
+        while viewer.is_running() and (args.duration <= 0 or time.time() - start < args.duration):
             step_start = time.time()
 
             # PD control every physics step (200 Hz default), using the

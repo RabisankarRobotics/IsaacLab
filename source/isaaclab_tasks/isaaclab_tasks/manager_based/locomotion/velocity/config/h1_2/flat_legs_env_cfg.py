@@ -105,13 +105,14 @@ LEG_JOINT_NAMES = [
 TORSO_JOINT_NAMES = ["torso_joint"]
 
 # Arm joints — 14 (7 per arm). PD-driven to a randomized target here; owned by a
-# manipulation policy at deploy. Fingers are fixed in the walk URDF (fingerless 27-DoF).
+# manipulation policy at deploy. Official handless URDF: no hands, 7-DoF arm named
+# shoulder_pitch/roll/yaw, elbow, wrist_roll, wrist_pitch, wrist_yaw.
 ARM_JOINT_NAMES = [
     ".*_shoulder_pitch_joint",
     ".*_shoulder_roll_joint",
     ".*_shoulder_yaw_joint",
-    ".*_elbow_pitch_joint",
-    ".*_elbow_roll_joint",
+    ".*_elbow_joint",
+    ".*_wrist_roll_joint",
     ".*_wrist_pitch_joint",
     ".*_wrist_yaw_joint",
 ]
@@ -125,27 +126,27 @@ GAIT_PERIOD = 0.8
 
 # Arm-target sample ranges (lo, hi) per joint — the poses the arms are randomized
 # to at reset + on interval. Same conventions/values as the validated h1_2_stand
-# task, EXTENDED to the 3 extra distal joints this fingerless-27DoF asset keeps
-# articulated (elbow_roll, wrist_pitch, wrist_yaw).
+# task, EXTENDED to the 3 extra distal joints this handless-27DoF asset keeps
+# articulated (wrist_roll, wrist_pitch, wrist_yaw).
 #   shoulder_pitch: 0 = arm straight down, negative = forward/up, positive = BACKWARD.
 #                   Upper bound capped at the default (0.4) so no backward pose.
 #   shoulder_roll:  left  -> positive = out to the left; right -> negative = out to the right.
 #   shoulder_yaw:   small twist either way.
-#   elbow_pitch:    0 = straight, positive = bent.
-#   elbow_roll / wrist_*: small ranges — enough to shift the hand CoM, not to flail.
+#   elbow:          0 = straight, positive = bent.
+#   wrist_roll / wrist_*: small ranges — enough to shift the hand CoM, not to flail.
 ARM_TARGET_RANGES: dict[str, tuple[float, float]] = {
     "left_shoulder_pitch_joint":  (-2.5,  0.4),
     "left_shoulder_roll_joint":   (-0.2,  0.8),
     "left_shoulder_yaw_joint":    (-0.5,  0.5),
-    "left_elbow_pitch_joint":     ( 0.0,  2.0),
-    "left_elbow_roll_joint":      (-0.5,  0.5),
+    "left_elbow_joint":           ( 0.0,  2.0),
+    "left_wrist_roll_joint":      (-0.5,  0.5),
     "left_wrist_pitch_joint":     (-0.3,  0.3),
     "left_wrist_yaw_joint":       (-0.3,  0.3),
     "right_shoulder_pitch_joint": (-2.5,  0.4),
     "right_shoulder_roll_joint":  (-0.8,  0.2),
     "right_shoulder_yaw_joint":   (-0.5,  0.5),
-    "right_elbow_pitch_joint":    ( 0.0,  2.0),
-    "right_elbow_roll_joint":     (-0.5,  0.5),
+    "right_elbow_joint":          ( 0.0,  2.0),
+    "right_wrist_roll_joint":     (-0.5,  0.5),
     "right_wrist_pitch_joint":    (-0.3,  0.3),
     "right_wrist_yaw_joint":      (-0.3,  0.3),
 }
@@ -228,8 +229,15 @@ class CommandsCfg:
 # ---------------------------------------------------------------------------
 @configclass
 class ActionsCfg:
+    # scale=0.5 matches the proven in-repo MLP walker (hv1_2). At the old 0.25,
+    # joint_target = default + 0.25*action, so commanding a swing step (hip ~0.5,
+    # knee ~0.8 rad off default) needed actions of 2-4 — the far tail of the policy
+    # distribution and only rarer as std collapses to 0.44. A step was mechanically
+    # out of exploration range regardless of reward => the robot always stood.
+    # 0.5 halves the action needed for the same joint excursion, putting a step
+    # inside the distribution. DEPLOY: the runtime must apply the SAME 0.5 scale.
     joint_pos = mdp.JointPositionActionCfg(
-        asset_name="robot", joint_names=LEG_JOINT_NAMES, scale=0.25, use_default_offset=True
+        asset_name="robot", joint_names=LEG_JOINT_NAMES, scale=0.5, use_default_offset=True
     )
 
 

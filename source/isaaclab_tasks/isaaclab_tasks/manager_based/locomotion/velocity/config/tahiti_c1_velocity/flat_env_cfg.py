@@ -180,9 +180,16 @@ class TahitiC1VelocityRewardsCfg:
         weight=2.5,
         params={"command_name": "base_velocity", "std": 0.3},
     )
+    # 2026-07-28 Round Arc-Fix: 2.0 → 2.5. Prior run had cmd_wz=0 but actual
+    # wz oscillating -0.87 to +0.44 rad/s (Metrics/error_vel_yaw = 0.37, huge).
+    # track_ang_vel_z_exp reward only reached 1.33 out of ~2 max, well below
+    # saturation → policy was under-motivated on yaw axis. With linear at 2.5
+    # and yaw at 2.0, the policy preferred eating yaw error rather than paying
+    # ankle_roll authority to correct it (ankle_roll was clipping at ±0.194
+    # every step). Matching yaw weight to linear closes that asymmetry.
     track_ang_vel_z_exp = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=2.0,
+        weight=2.5,
         params={"command_name": "base_velocity", "std": 0.3},
     )
 
@@ -393,12 +400,16 @@ class TahitiC1VelocityRewardsCfg:
     # reactive contact_forces cap above — teaches the policy to slow the
     # foot before touchdown rather than paying the impulse afterward.
     # Physics: F_peak ∝ m Δv / Δt, so cutting Δv_z at contact directly cuts
-    # peak GRF. Small weight (-0.5) so it doesn't dominate stance-phase
-    # small oscillations. force_threshold 5 N matches the standard used
-    # elsewhere (feet_slide, feet_stance_flat_ankle).
+    # peak GRF. force_threshold 5 N matches the standard used elsewhere
+    # (feet_slide, feet_stance_flat_ankle).
+    # 2026-07-28 Round Force-Reduction: -0.5 → -1.0. Prior run peak L=3.65×BW
+    # R=3.24×BW; target 1.5-2×BW (healthy human range 1.1-1.3×BW). Reward
+    # earned -0.078/ep, real gradient firing but modest. Doubling doubles the
+    # causal pressure without adding a new overlapping term. Still small
+    # enough not to fight stance-phase micro-oscillation.
     foot_contact_velocity = RewTerm(
         func=custom_mdp.foot_contact_velocity_penalty,
-        weight=-0.5,
+        weight=-1.0,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),

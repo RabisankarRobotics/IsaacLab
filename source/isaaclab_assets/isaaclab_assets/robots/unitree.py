@@ -367,10 +367,14 @@ H1_2_STAND_CFG = ArticulationCfg(
 # ---------------------------------------------------------------------------
 # H1_2 legs-only WALK task (27 DoF: 12 legs + torso + 7 per arm).
 #
-# Full-body-fingerless: the 24 dexterous-hand finger joints are converted to
-# FIXED by resources/robots/h1_2/generate_walk_urdf.py; with
-# ``merge_fixed_joints=True`` each hand folds into ``*_wrist_yaw_link``, giving
-# a single rigid EE mass at the wrist (the +3 kg payload DR attaches there).
+# Uses the OFFICIAL Unitree handless URDF (h1_2_handless.urdf), NOT the older
+# generated h1_2_walk.urdf. The two are byte-identical in the LEGS (masses,
+# inertias, joint axes/origins, hip & ankle limits/efforts); the handless URDF
+# only differs in the arms — 7-DoF chain named shoulder_pitch/roll/yaw, elbow,
+# wrist_roll, wrist_pitch, wrist_yaw (vs walk's elbow_pitch/elbow_roll naming) —
+# and it carries NO hands at all (ends at ``*_wrist_yaw_link``; the +3 kg payload
+# DR still attaches there). All fixed sensor/logo joints fold in via
+# ``merge_fixed_joints=True``.
 #
 # Gain philosophy (mirrors G1_29DOF_CLEAN_CFG): legs + torso STIFF, arms/wrists
 # on a softer PD so (a) the legs actually FEEL the CoM shift from arm motion and
@@ -379,7 +383,7 @@ H1_2_STAND_CFG = ArticulationCfg(
 # firm enough to track the randomized "hand forward / side" targets under load.
 # Isaac Lab converts URDF -> USD on first launch.
 # ---------------------------------------------------------------------------
-H1_2_WALK_URDF_PATH = "/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/urdf_mesh/h1_2/h1_2_walk.urdf"
+H1_2_WALK_URDF_PATH = "/home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/urdf_mesh/h1_2_hand_less/h1_2_handless.urdf"
 
 H1_2_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
@@ -402,11 +406,12 @@ H1_2_CFG = ArticulationCfg(
                     ".*_ankle_roll_joint":  40.0,
                     "torso_joint":        200.0,
                     # -- arms + wrists: softer, but firm enough to hold the DR poses --
+                    # (handless arm naming: elbow, wrist_roll, wrist_pitch, wrist_yaw)
                     ".*_shoulder_pitch_joint": 100.0,
                     ".*_shoulder_roll_joint":  100.0,
                     ".*_shoulder_yaw_joint":    50.0,
-                    ".*_elbow_pitch_joint":     80.0,
-                    ".*_elbow_roll_joint":      40.0,
+                    ".*_elbow_joint":           80.0,
+                    ".*_wrist_roll_joint":      40.0,
                     ".*_wrist_pitch_joint":     40.0,
                     ".*_wrist_yaw_joint":       40.0,
                 },
@@ -421,8 +426,8 @@ H1_2_CFG = ArticulationCfg(
                     ".*_shoulder_pitch_joint": 2.0,
                     ".*_shoulder_roll_joint":  2.0,
                     ".*_shoulder_yaw_joint":   2.0,
-                    ".*_elbow_pitch_joint":    2.0,
-                    ".*_elbow_roll_joint":     1.0,
+                    ".*_elbow_joint":          2.0,
+                    ".*_wrist_roll_joint":     1.0,
                     ".*_wrist_pitch_joint":    1.0,
                     ".*_wrist_yaw_joint":      1.0,
                 },
@@ -459,8 +464,8 @@ H1_2_CFG = ArticulationCfg(
             ".*_shoulder_pitch_joint": 0.4,
             ".*_shoulder_roll_joint":  0.0,
             ".*_shoulder_yaw_joint":   0.0,
-            ".*_elbow_pitch_joint":    0.3,
-            ".*_elbow_roll_joint":     0.0,
+            ".*_elbow_joint":          0.3,
+            ".*_wrist_roll_joint":     0.0,
             ".*_wrist_pitch_joint":    0.0,
             ".*_wrist_yaw_joint":      0.0,
         },
@@ -478,7 +483,7 @@ H1_2_CFG = ArticulationCfg(
         ),
     },
 )
-"""H1_2 27-DoF (12 legs + torso + 7-DoF arms, fingerless) for the legs-only walk."""
+"""H1_2 27-DoF (12 legs + torso + 7-DoF arms, official handless) for the legs-only walk."""
 
 
 G1_CFG = ArticulationCfg(

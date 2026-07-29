@@ -212,7 +212,12 @@ class CommandsCfg:
         rel_standing_envs=0.1,
         rel_heading_envs=1.0,
         heading_command=False,
-        debug_vis=False,
+        # Draw the two velocity arrows (like tahiti/hv1_2, which inherit
+        # debug_vis=True from the base CommandsCfg): GREEN = commanded velocity
+        # (goal), BLUE = the base's actual velocity (tracking). Lets you SEE how
+        # well the walk tracks the command during PLAY. Cheap; safe to leave on
+        # for headless training too (markers only render with a viewer).
+        debug_vis=True,
         # START tiny — the curriculum grows these toward limit_ranges.
         ranges=UniformLevelVelocityCommandCfg.Ranges(
             lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.2, 0.2)

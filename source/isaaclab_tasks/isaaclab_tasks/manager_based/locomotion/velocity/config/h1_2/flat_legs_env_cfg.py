@@ -343,9 +343,15 @@ class RewardsCfg:
     # command (at err 0.28: reward 0.73->0.61), pulling the achieved velocity UP toward
     # the commanded value. The earlier "loosen std or it stands" concern is retired —
     # that applied when it couldn't step; now stepping is solved, sharpen tracking.
+    # WEIGHT 1.5 -> 2.0 (2026-07-30, "swing-farming" rebalance). iter-5288 diagnosis: the
+    # policy settled into a swing-FARMING optimum (parade high-step + crouch-to-balance +
+    # right-leg-favored + slow) because feet_air_time (weight 2.0) was the single highest
+    # positive term -> holding long swings paid more than translating. Raising track_lin to
+    # 2.0 makes FORWARD PROGRESS the dominant positive reward again, so moving is cheaper than
+    # marching. Attacks "slow" (error_vel_xy 0.24) at its source. Reward-only: NO deploy change.
     track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.5,
+        weight=2.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.16)},
     )
     track_ang_vel_z = RewTerm(
@@ -422,7 +428,12 @@ class RewardsCfg:
     # narrow 6 cm window is a WEAK lever; the RELIABLE de-crouch is straightening the DEFAULT pose
     # (Tier 2: knee 0.36->0.24 in H1_2_CFG) since the policy anchors to its default and currently
     # walks BELOW even its own static default height. Reward-only: NO deploy change.
-    base_height = RewTerm(func=mdp.base_height_l2, weight=-20.0, params={"target_height": 1.00})
+    # TARGET 1.00 -> 1.015 (2026-07-30): set to the DEFAULT-POSE static height so the robot is
+    # asked to WALK AT ITS RESTING POSTURE. 1.015 m corresponds to stance knee ~21deg (the default
+    # bend) — natural, NOT locked (1.028 = straight ceiling) and well above the deep ~40deg / 0.977 m
+    # crouch it does now. This is the "maintain default height during walk" target. Weak lever alone
+    # (see note above) — it HOLDS height once the Round-3 rebalance stops the crouch-for-balance.
+    base_height = RewTerm(func=mdp.base_height_l2, weight=-20.0, params={"target_height": 1.015})
 
     # -- feet / gait
     #
@@ -467,37 +478,52 @@ class RewardsCfg:
         weight=2.0,  # strong on purpose — must beat a DEEP standing basin. tahiti 2.5 / hv1_2 1.0.
         params={
             "command_name": "base_velocity",
-            # 0.4 -> 0.3 (2026-07-29, cadence). The term caps single-support credit at
-            # `threshold`; at 0.4 s it paid to PROLONG each swing (~1.25 Hz, the slow-mo
-            # gait). Capping at 0.3 s removes the incentive to hold a long swing, so the
-            # policy ends the step sooner => quicker turnover. Still well above a foot-tap.
-            "threshold": 0.3,
+            # 0.4 -> 0.3 (2026-07-29) -> 0.25 (2026-07-30, anti-parade/anti-march). The term
+            # caps single-support credit at `threshold`; the LONGER the cap, the more it pays
+            # to hold a high, prolonged swing (= the parade high-step + slow gait). Dropping to
+            # 0.25 s ends each step sooner => quicker cadence, shorter/lower swings, and less
+            # time balancing on one crouched leg. Still well above a foot-tap; feet_air_time
+            # stays the SOLE stepping driver (weight 2.0 unchanged, so stepping is not undercut).
+            "threshold": 0.25,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
-    # feet_swing_height DISABLED 2026-07-27 — the 5.6k run logged it at EXACTLY -0.0000, i.e. it
-    # forced NOTHING: as a penalty that only applies to an AIRBORNE foot it is inert for a planted
-    # robot and becomes a BARRIER to the exploratory first lift (any height != 0.08 m costs
-    # -20*(z-0.08)^2). It shapes swing HEIGHT of an ALREADY-stepping gait (which is how the
-    # official LSTM recipe can afford -20). Re-add SMALL (~ -1) for clearance polish AFTER a
-    # confirmed walk; for now it only fights the air_time carrot above.
-    # feet_swing_height = RewTerm(
-    #     func=custom_mdp.feet_swing_height,
-    #     weight=-20.0,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
-    #         "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-    #         "target_height": 0.08,
-    #     },
-    # )
+    # feet_swing_height RE-ENABLED 2026-07-30 as the DIRECT anti-parade / flat-horizontal-step
+    # lever (user: "less vertical feet step, more horizontal travel like human"). It penalizes
+    # each AIRBORNE foot for (foot_z - target)^2, foot_z = ankle_roll_link ORIGIN world-z, so the
+    # target sets the swing PLATEAU height => a flat, low, forward-skimming arc instead of a high
+    # vertical lift. Safe now (the barrier concern was for a NON-stepping robot; this gait already
+    # steps every step, so the term reshapes existing swings, it does not block them).
+    #   TARGET 0.075 m — URDF-DERIVED, not guessed: the ankle_roll_link origin sits 0.045 m above
+    #   the foot sole (STL zmin = -0.045, MEASURED), so sole-on-ground => origin z = 0.045. Adding
+    #   a 0.030 m swing sole-clearance (human flat-ground toe clearance ~0.01-0.02 m + margin for
+    #   sim2real swing-tracking error) gives origin target 0.045 + 0.030 = 0.075 m. Symmetric L2
+    #   pulls the foot toward 3 cm clearance from BOTH sides, so it flattens the parade WITHOUT
+    #   risking a scuff (won't push below 3 cm). Lower it toward 0.070 for an even flatter step.
+    #   WEIGHT -10 (half the official LSTM -20): at a 0.15 m parade foot the down-pull is
+    #   2*(0.15-0.075)*10 = 1.5 /m — firm enough to cap the lift; the code's old "~-1" note is too
+    #   weak to overcome a strong parade. Raise toward -20 if still high, drop to -5 if too stiff.
+    feet_swing_height = RewTerm(
+        func=custom_mdp.feet_swing_height,
+        weight=-10.0,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
+            "target_height": 0.075,
+        },
+    )
     # L/R symmetry — RE-ENABLED 2026-07-29 at -0.5 (was disabled walk-first). This is the
     # "one-leg-stand / limp" fix: it penalizes var(air_time)+var(contact_time) across the two
     # feet, so a gait where one foot stays up much longer than the other (the yoga-walk the
     # user is seeing) costs reward. Held at -0.5 (not the old -1.0, which suppresses the
     # naturally-uneven FIRST steps) because a stable walk now exists — STAGE-2 conditions met.
+    # WEIGHT -0.5 -> -1.0 (2026-07-30): user reports "right leg more air than left" (favored-leg
+    # limp). The term IS registering it (-0.0115 raw = var ~0.023 ~ 0.15 s L/R air gap) but -0.5
+    # is too weak to correct. Stage-2 (stable walk exists) retires the "-1.0 suppresses uneven
+    # first steps" worry, so full -1.0 now forces a mirror-image gait.
     air_time_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        weight=-0.5,
+        weight=-1.0,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     # -0.2 -> -0.5 (2026-07-26, matching tahiti/hv1_2). Closes the "slide/drag a planted
@@ -666,6 +692,58 @@ class EventCfg:
             "operation": "add",
         },
     )
+    # ================= SIM2REAL DR (added 2026-07-30) =================
+    # Ported VERBATIM from the user's OWN sim2real-VALIDATED robots (hv1_2, tahiti, g1) — proven
+    # ranges, NOT guesses. All STARTUP mode = a fixed-but-random draw per env => PASSIVE per-env
+    # variation that hardens the policy WITHOUT perturbing mid-episode (safe to add on hot resume;
+    # unlike push, it can't destabilize the freshly-won walk). Closes the three biggest sim2sim
+    # gaps: motor gain mismatch, joint-physics mismatch, and CoM/mass mismatch.
+    #
+    # (1) Actuator gain mismatch — THE classic sim2real gap. Real kp/kd differ from the URDF.
+    #     ±10% (0.9,1.1), hv1_2-proven: hv1_2 explicitly found ±20% hurt convergence (policy
+    #     hedges too wide to commit to a precise gait) and settled on ±10%. Ramp to ±20% only in
+    #     a 2nd-stage refinement once a clean baseline exists.
+    actuator_gains_randomize = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "stiffness_distribution_params": (0.9, 1.1),
+            "damping_distribution_params": (0.9, 1.1),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    # (2) Joint-level physics mismatch — Coulomb friction + armature ×(0.9,1.1). Same ±10%, same
+    #     hv1_2 reasoning. NOTE armature here SCALES the 0.01 we set on every joint (the walk-
+    #     enabler) by ±10% => the deploy target stays 0.01, envs vary around it.
+    joint_params_randomize = EventTerm(
+        func=mdp.randomize_joint_parameters,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "friction_distribution_params": (0.9, 1.1),
+            "armature_distribution_params": (0.9, 1.1),
+            "operation": "scale",
+            "distribution": "uniform",
+        },
+    )
+    # (3) CoM position mismatch — torso CoM shifted ±0.05 m in x/y/z (g1-proven). The real robot's
+    #     mass distribution never matches the URDF exactly; this is the single most important mass
+    #     DR for balance robustness. Pairs with add_base_mass (magnitude) above (position here).
+    base_com_randomize = EventTerm(
+        func=mdp.randomize_rigid_body_com,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
+            "com_range": {"x": (-0.05, 0.05), "y": (-0.05, 0.05), "z": (-0.05, 0.05)},
+        },
+    )
+    # NOTE: PUSH DR (active velocity kicks) is deliberately NOT added here — it stays at (0,0)
+    # below. Push is the LETHAL axis for H1_2 (killed the 10k run: 100% bad_orientation) and is
+    # an ACTIVE mid-episode disturbance that would destabilize gait tuning. Add it as a hardening
+    # stage AFTER the clean human-like walk converges (grow via push_velocity_levels curriculum).
+    # ==================================================================
     # +3 kg EE PAYLOAD DR — REMOVED for the walk-first stage (2026-07-26, user request:
     # "remove hand payload for now, first walk then manipulation DR"). Carrying a heavy,
     # arm-swung object while ALSO trying to discover a gait was one disturbance too many.

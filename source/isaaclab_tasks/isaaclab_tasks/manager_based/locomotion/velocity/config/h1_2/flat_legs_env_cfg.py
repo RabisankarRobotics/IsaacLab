@@ -409,11 +409,20 @@ class RewardsCfg:
     )
 
     flat_orientation = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)  # -1.0 = official (orientation)
-    # base_height RESTORED 2026-07-26 = official (base_height -10.0, base_height_target 1.0).
-    # The official h1_2 recipe DOES penalize base height and walks fine, so our earlier
-    # "stiff vertical spring" theory was wrong for this robot. TUNE: 1.0 m matches the
-    # official target (robot inits at ~1.05 m); verify the settled walking height in PLAY.
-    base_height = RewTerm(func=mdp.base_height_l2, weight=-10.0, params={"target_height": 1.0})
+    # ANTI-CROUCH 2026-07-30. iter-3028 log decoded: base_height reward -0.0114 = -10*(h-1.0)^2
+    # => walking pelvis ~0.97 m (stance knee ~40deg = deep crouch). At -10 the term was
+    # negligible (-0.01 vs track_lin +1.33) => policy picked the stable knee-bend crouch.
+    # URDF FORWARD KINEMATICS (thigh .40 + shank .40 + ankle .02, pelvis->hip .163, foot sole
+    # .045 below ankle origin): straight-leg pelvis CEILING = 1.028 m; default pose (knee 21deg)
+    # = 1.015 m. So an earlier 1.05 target was ABOVE the physical ceiling (unreachable). Correct
+    # target = a natural WALKING height with a slight athletic bend: 1.00 m (~3 cm above the 0.97
+    # crouch, safely below the 1.028 stiff-knee ceiling). Weight -20 for authority. Targets
+    # PELVIS HEIGHT (stance property) not knee angle -> extends the stance leg without blocking
+    # swing-knee bend (keeps the "no explicit knee-flexion reward" constraint). NOTE: L2 over this
+    # narrow 6 cm window is a WEAK lever; the RELIABLE de-crouch is straightening the DEFAULT pose
+    # (Tier 2: knee 0.36->0.24 in H1_2_CFG) since the policy anchors to its default and currently
+    # walks BELOW even its own static default height. Reward-only: NO deploy change.
+    base_height = RewTerm(func=mdp.base_height_l2, weight=-20.0, params={"target_height": 1.00})
 
     # -- feet / gait
     #

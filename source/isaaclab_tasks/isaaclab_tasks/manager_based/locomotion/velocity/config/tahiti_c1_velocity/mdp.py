@@ -284,6 +284,30 @@ def hip_pitch_swing_amplitude(
     return diff * moving * swinging
 
 
+def stand_still_pitch_penalty(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Penalize base tilt ONLY when cmd is near zero — kills lean-first startup.
+
+    Why: on real hardware the policy was leaning the pelvis in the cmd direction
+    BEFORE stepping, using gravity to generate horizontal velocity. Motor lag
+    then turns the lean into overshoot -> looks like the robot is about to fall.
+    Root cause: global flat_orientation_l2 doesn't punish tilt strongly enough
+    during standing, and track_lin_vel_xy rewards ANY horizontal velocity
+    including that produced by tilt. This term surgically punishes tilt only
+    when the operator is NOT commanding motion, leaving natural walking lean
+    unaffected. Use with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    tilt = torch.sum(asset.data.projected_gravity_b[:, :2] ** 2, dim=1)
+    cmd = env.command_manager.get_command(command_name)
+    standing_mask = (torch.norm(cmd[:, :2], dim=1) < command_threshold).float()
+    return tilt * standing_mask
+
+
 def stand_to_walk_command_curriculum(
     env: "ManagerBasedRLEnv",
     env_ids,

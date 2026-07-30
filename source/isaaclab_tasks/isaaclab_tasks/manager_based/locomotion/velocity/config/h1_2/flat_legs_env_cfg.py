@@ -766,18 +766,24 @@ class EventCfg:
             "torque_range": (0.0, 0.0),
         },
     )
+    # RESET-VELOCITY DR added 2026-07-30 (user: "add reset base velocity DR for strong
+    # balancing"). Each episode now SPAWNS with a random base velocity, so the policy must
+    # stabilize from a moving/tilting start — the gentle, RESET-mode balance-robustness DR
+    # (no lethal mid-episode kick; unlike push it can't destabilize the forming gait). Ranges
+    # ported VERBATIM from the sim2real-validated tahiti_c1 walker. Bonus: the y + roll velocity
+    # perturbations directly train the LATERAL balance that governs the left/right sway.
     reset_base = EventTerm(
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "z": (0.0, 0.0),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
+                "x": (-0.3, 0.3),
+                "y": (-0.3, 0.3),
+                "z": (-0.3, 0.3),
+                "roll": (-0.3, 0.3),
+                "pitch": (-0.3, 0.3),
+                "yaw": (-0.3, 0.3),
             },
         },
     )
@@ -830,10 +836,15 @@ class EventCfg:
     # terminations were bad_orientation, 79% in the 5-8 s window (pushes fire at
     # t = 5/10/15 s), mean pelvis tilt spiking 0.10 -> 0.27 rad within 0.8 s of a
     # push. Walk first, harden second.
+    # PUSH RE-ENABLED 2026-07-30 (user: "add push DR for strong balancing"). Kept at (0,0) here;
+    # the push_velocity_levels curriculum below GROWS it — only after the gait stabilizes AND only
+    # while surviving. Interval widened 5 s -> (10,15) s (was every 5 s = 3 kills/episode; g1 uses
+    # 10-15 s). Fewer, spaced kicks = gentler hardening for push-fragile H1_2 (a v=0.5 kick moves
+    # its capture point 0.147 m, past the foot edge => recovery needs a step).
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
-        interval_range_s=(5.0, 5.0),
+        interval_range_s=(10.0, 15.0),
         params={"velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0)}},
     )
 
@@ -870,21 +881,25 @@ class CurriculumCfg:
             "rel_standing_envs_phase3": 0.1,
         },
     )
-    # PUSH DISABLED 2026-07-25 — get the robot WALKING first; push is a disturbance to
-    # reject AFTER it has a gait, and while it can't walk it just causes falls (it was
-    # ~87% of terminations at 10k). push_robot stays at (0,0) (a true no-op: the event
-    # does vel += 0), so no kick is ever applied. RE-ENABLE this term once a PLAY
-    # rollout shows a stable walk, to harden disturbance rejection.
-    # push_velocity_levels = CurrTerm(
-    #     func=custom_mdp.push_velocity_levels,
-    #     params={
-    #         "term_name": "push_robot",
-    #         "step": 0.05,
-    #         "max_velocity": 0.5,
-    #         "min_alive_frac": 0.8,
-    #         "start_after_iters": 2000,  # == command_phase stand_until_iters
-    #     },
-    # )
+    # PUSH RE-ENABLED 2026-07-30 (user request, "strong balancing"). Grows push_robot's velocity
+    # from 0 by 0.05 each episode boundary, ONLY while alive_frac > 0.8 AND after start_after_iters.
+    # It self-limits: if the robot can't survive a push level, alive_frac drops and growth STOPS —
+    # so max_velocity 0.5 is a ceiling the robot reaches only if it can handle it, not a forced kick.
+    #   start_after_iters 2000: on --resume, common_step_counter starts FRESH at 0, so this counts
+    #   2000 iters INTO the resumed run => the tall/flat gait (Round 3/4) converges push-free first,
+    #   THEN hardening begins. TENSION TO WATCH: push rewards a LOW CoM (defensively stable), so it
+    #   pulls AGAINST the anti-crouch base_height (1.015). If the pelvis sinks once push ramps, that
+    #   is the trade-off — raise base_height weight to hold it, or lower max_velocity.
+    push_velocity_levels = CurrTerm(
+        func=custom_mdp.push_velocity_levels,
+        params={
+            "term_name": "push_robot",
+            "step": 0.05,
+            "max_velocity": 0.5,
+            "min_alive_frac": 0.8,
+            "start_after_iters": 2000,
+        },
+    )
     # EE-PAYLOAD curriculum REMOVED 2026-07-26 — the payload event itself is disabled for
     # the walk-first stage (see EventCfg.add_ee_payload). Re-add both together, staged, once
     # a stable walk is confirmed.

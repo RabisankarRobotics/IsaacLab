@@ -241,13 +241,17 @@ class TahitiC1VelocityRewardsCfg:
     # differential toward zero, so this term explicitly punishes parade
     # shape. Gated by cmd>0.1 m/s AND at least one foot currently airborne
     # (>50 ms) — cannot be farmed by standing hip-flex or static split
-    # stance. Weight 0.5 is conservative: max per-step raw = 0.6, so
-    # per-episode ceiling with 70 % moving, 50 % swinging, 1000 steps ~ a
-    # few tenths, comparable to feet_air_time. Bump to 0.75-1.0 if the
-    # stride doesn't lengthen after 10k iters and other terms are healthy.
+    # stance.
+    # 2026-07-30 Kill-Parade: 0.5 → 1.0. Prev run at 0.5 earned only ~0.041/ep
+    # while feet_air_time (duration-only, weight 2.5) earned ~0.28/ep — the
+    # duration pull outweighed the directional pull ~7x, so the policy still
+    # farmed parade. Doubling puts hip_pitch_swing on the same order as the
+    # variance penalty (5) and closer to feet_air_time, moving the reward
+    # optimum toward real horizontal stride. Still safely below track_lin
+    # (2.5), so no risk of penguin-rock domination.
     hip_pitch_swing = RewTerm(
         func=custom_mdp.hip_pitch_swing_amplitude,
-        weight=0.5,
+        weight=1.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
@@ -508,6 +512,25 @@ class TahitiC1VelocityRewardsCfg:
             "command_threshold": 0.1,
         },
     )
+    # 2026-07-30 Kill-Lean-First: NEW. Real-robot observation: when the user
+    # commands forward or backward walk, the policy first LEANS the pelvis in
+    # the cmd direction then starts stepping, using gravity to generate
+    # horizontal velocity. Motor lag amplifies that lean into overshoot ->
+    # near-fall each command onset. Root cause: track_lin_vel_xy (2.5) rewards
+    # any horizontal velocity (including tilt-generated), and flat_orientation
+    # (-3.0) global penalty is too weak at small tilts. This term surgically
+    # punishes projected_gravity_b tilt ONLY when cmd_norm < 0.1, so a
+    # standing/pre-walk robot pays for tilt; a walking robot is unaffected.
+    # Weight -3.0 matches the other stand_still terms.
+    stand_still_pitch = RewTerm(
+        func=custom_mdp.stand_still_pitch_penalty,
+        weight=-3.0,
+        params={
+            "command_name": "base_velocity",
+            "command_threshold": 0.1,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
 
 
 @configclass
@@ -621,7 +644,7 @@ class TahitiC1VelocityFlatEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.events.reset_base.params = {
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
-                "x": (-0.5, 0.2), "y": (-0.3, 0.3), "z": (-0.3, 0.3),
+                "x": (-0.5, 0.3), "y": (-0.3, 0.3), "z": (-0.3, 0.3),
                 "roll": (-0.3, 0.3), "pitch": (-0.3, 0.3), "yaw": (-0.3, 0.3),
             },
         }

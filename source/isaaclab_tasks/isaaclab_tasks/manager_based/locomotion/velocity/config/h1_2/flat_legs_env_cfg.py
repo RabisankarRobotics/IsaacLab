@@ -335,15 +335,23 @@ class RewardsCfg:
     # biggest reward) by PIVOTING the base in place to satisfy yaw commands while never
     # translating (error_vel_xy stuck at 0.88). Making linear tracking pay 1.5x the yaw kills
     # that shortcut — forward progress is now the cheaper way to earn tracking reward.
+    # STD TIGHTENED 0.5 -> 0.4 (2026-07-29, "slow-motion" fix). The robot now WALKS
+    # robustly (ep len 1000, bad_orient 0.15%) but LAGS the command: error_vel_xy 0.28,
+    # error_vel_yaw 0.47, while track_lin sat at 1.36 (~90% of max) — proof the loose
+    # std=0.5 let a 0.28 m/s lag keep most of the reward, so there was no pull to full
+    # speed. std 0.5->0.4 (sigma^2 0.25->0.16) steepens the slope around the exact
+    # command (at err 0.28: reward 0.73->0.61), pulling the achieved velocity UP toward
+    # the commanded value. The earlier "loosen std or it stands" concern is retired —
+    # that applied when it couldn't step; now stepping is solved, sharpen tracking.
     track_lin_vel_xy = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
         weight=1.5,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+        params={"command_name": "base_velocity", "std": math.sqrt(0.16)},
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp,
         weight=1.0,  # kept BELOW track_lin (was farmed by pivot-in-place); hv1_2 uses 1.5
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+        params={"command_name": "base_velocity", "std": math.sqrt(0.16)},  # 0.5->0.4: yaw error 0.47 is the worst-tracked axis
     )
     # alive 0.15 -> 0.05 (2026-07-27) = hv1_2 value. At 0.15 this was a big STANDING SUBSIDY:
     # a robot that just balances collects it in full with zero risk, so standing beat stepping.
@@ -450,7 +458,11 @@ class RewardsCfg:
         weight=2.0,  # strong on purpose — must beat a DEEP standing basin. tahiti 2.5 / hv1_2 1.0.
         params={
             "command_name": "base_velocity",
-            "threshold": 0.4,  # reward single-support up to 0.4 s (a real step, not a foot-tap)
+            # 0.4 -> 0.3 (2026-07-29, cadence). The term caps single-support credit at
+            # `threshold`; at 0.4 s it paid to PROLONG each swing (~1.25 Hz, the slow-mo
+            # gait). Capping at 0.3 s removes the incentive to hold a long swing, so the
+            # policy ends the step sooner => quicker turnover. Still well above a foot-tap.
+            "threshold": 0.3,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
@@ -469,15 +481,16 @@ class RewardsCfg:
     #         "target_height": 0.08,
     #     },
     # )
-    # L/R symmetry nudge — REMOVED for the walk-first stage (2026-07-26). At -1.0 this
-    # penalizes asymmetric air/contact time, which suppresses the FIRST tentative (naturally
-    # uneven) steps while the gait is still forming. No official biped uses it. STAGE 2:
-    # re-add to clean up a limp once a stable walk exists.
-    # air_time_variance = RewTerm(
-    #     func=custom_mdp.air_time_variance_penalty,
-    #     weight=-1.0,
-    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
-    # )
+    # L/R symmetry — RE-ENABLED 2026-07-29 at -0.5 (was disabled walk-first). This is the
+    # "one-leg-stand / limp" fix: it penalizes var(air_time)+var(contact_time) across the two
+    # feet, so a gait where one foot stays up much longer than the other (the yoga-walk the
+    # user is seeing) costs reward. Held at -0.5 (not the old -1.0, which suppresses the
+    # naturally-uneven FIRST steps) because a stable walk now exists — STAGE-2 conditions met.
+    air_time_variance = RewTerm(
+        func=custom_mdp.air_time_variance_penalty,
+        weight=-0.5,
+        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
+    )
     # -0.2 -> -0.5 (2026-07-26, matching tahiti/hv1_2). Closes the "slide/drag a planted
     # foot to translate" loophole: to satisfy velocity tracking the base must actually be
     # carried forward by an AIRBORNE foot (a step), not dragged. Both custom walkers use -0.5.
@@ -514,13 +527,17 @@ class RewardsCfg:
     # approach (a contact penalty would be flat until the feet already touch).
     feet_lateral_distance = RewTerm(
         func=custom_mdp.feet_lateral_distance_clearance,
-        weight=-2.0,  # -10 -> -2 for the walk-first stage: kept as a SAFETY against the feet
-        # crossing (self-collision is off), but de-emphasized so a guessed min_distance can't
-        # dominate the gait. Raise back toward -10 in Stage 2 once min_distance is measured.
+        # -2 -> -5 (2026-07-29, "feet-close" fix). At -2 the hinge was toothless
+        # (logged -0.0147) so the policy freely narrowed its stance / scissored. -5 gives
+        # it real authority WITHOUT reaching the -10 that could force a toed-out waddle.
+        weight=-5.0,
         params={
-            # TUNE: ~half H1_2's natural stance (wider hips than G1). 0.20 is a first
-            # cut; measure the true foot separation at hip_roll=0 in PLAY and set to ~0.5x.
-            "min_distance": 0.20,
+            # MEASURED from the handless URDF (not guessed): each foot hangs at Y=±0.163 m
+            # under its hip at hip_roll=0, so the NATURAL stance is 0.326 m. min_distance 0.22
+            # (0.20 -> 0.22) sets the penalty floor well below natural (so normal swing-through
+            # near the midline isn't over-taxed) but high enough to stop the narrow/crossed
+            # stance. Raise toward ~0.25 only if PLAY still shows the feet too close.
+            "min_distance": 0.22,
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
         },
     )

@@ -1,0 +1,223 @@
+meta:
+  task: Isaac-Velocity-Flat-Tahiti_C1-v0
+  play_task: Isaac-Velocity-Flat-Tahiti_C1-Play-v0
+  experiment_name: tahiti_c1_velocity_flat
+  run_dir: /run/user/1000/gvfs/sftp:host=192.168.1.112,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/tahiti_c1_velocity_flat/2026-07-10_09-37-08
+  checkpoint: /run/user/1000/gvfs/sftp:host=192.168.1.112,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/tahiti_c1_velocity_flat/2026-07-10_09-37-08/model_10200.pt
+robot:
+  xml_path: /home/rabisankar/IsaacLab/deploy/mujoco/tahiti_c1_scene.xml
+  num_dof_total: 12
+  joint_names_isaac_order:
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
+  default_joint_pos:
+  - 0.0
+  - 0.0
+  - -0.10
+  - -0.10
+  - 0.0
+  - 0.0
+  - 0.30
+  - 0.30
+  - 0.20
+  - 0.20
+  - 0.0
+  - 0.0
+  kp:
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 250.0
+  - 200.0
+  - 200.0
+  - 200.0
+  - 200.0
+  kd:
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 25.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  effort_limit:
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 85.0
+  - 20.0
+  - 20.0
+  - 20.0
+  - 20.0
+  velocity_limit:
+  - 10.0
+  - 10.0
+  - 10.0
+  - 10.0
+  - 10.0
+  - 10.0
+  - 10.0
+  - 10.0
+  - 16.0
+  - 16.0
+  - 16.0
+  - 16.0
+  armature:
+  - 0.326938
+  - 0.326938
+  - 0.326938
+  - 0.326938
+  - 0.326938
+  - 0.326938
+  - 0.326938
+  - 0.326938
+  - 0.019603
+  - 0.019603
+  - 0.019603
+  - 0.019603
+  friction:
+  - 1.694307
+  - 1.694307
+  - 1.694307
+  - 1.694307
+  - 1.694307
+  - 1.694307
+  - 1.694307
+  - 1.694307
+  - 0.321816
+  - 0.321816
+  - 0.321816
+  - 0.321816
+  viscous_friction:
+  - 0.350134
+  - 0.350134
+  - 0.350134
+  - 0.350134
+  - 0.350134
+  - 0.350134
+  - 0.350134
+  - 0.350134
+  - 0.16564
+  - 0.16564
+  - 0.16564
+  - 0.16564
+  pos_limit_lower:
+  - -0.43629997968673706
+  - -0.43629997968673706
+  - -2.0071001052856445
+  - -2.0071001052856445
+  - -0.26179996132850647
+  - -2.7924997806549072
+  - 0.0
+  - 0.0
+  - -0.5235999226570129
+  - -0.5235999226570129
+  - -0.1745000034570694
+  - -0.1745000034570694
+  pos_limit_upper:
+  - 0.43629997968673706
+  - 0.43629997968673706
+  - 2.1816999912261963
+  - 2.1816999912261963
+  - 2.7924997806549072
+  - 0.26179996132850647
+  - 2.1816999912261963
+  - 2.1816999912261963
+  - 0.8726999163627625
+  - 0.8726999163627625
+  - 0.1745000034570694
+  - 0.1745000034570694
+action:
+  dim: 12
+  joint_names_action_order:
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
+  scale:
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.25
+  - 0.10
+  - 0.10
+  use_default_offset: true
+observation:
+  total_dim: 225
+  history_length: 5
+  terms:
+  - name: base_ang_vel
+    dim: 3
+  - name: projected_gravity
+    dim: 3
+  - name: velocity_commands
+    dim: 3
+  - name: joint_pos
+    dim: 12
+  - name: joint_vel
+    dim: 12
+  - name: actions
+    dim: 12
+  obs_scales:
+    lin_vel: 1.0
+    ang_vel: 1.0
+    joint_pos: 1.0
+    joint_vel: 1.0
+    _comment: Isaac Lab manager-based env returns RAW values (no scaling).
+control:
+  sim_dt: 0.005
+  decimation: 4
+  policy_dt: 0.02
+commands:
+  active_terms:
+  - name: base_velocity
+    dim: 3
+  init_velocity:
+  - 0.0
+  - 0.0
+  - 0.0
+  _comment: Set EE pose commands at runtime (per-hand) in the MuJoCo runner.
+policy:
+  jit_path: /home/rabisankar/IsaacLab/deploy/model/tahiti_c1_leg_only/policy9/policy.pt
+  onnx_path: /home/rabisankar/IsaacLab/deploy/model/tahiti_c1_leg_only/policy9/policy.onnx
+  size_mb: 0.74
+  actor_obs_normalization: null
+  actor_hidden_dims: null
+  activation: null

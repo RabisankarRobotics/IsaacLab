@@ -410,7 +410,11 @@ class RewardsCfg:
     )
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        # -0.1 -> -0.25 (2026-08-01, TOE-IN fix). sim2sim shows the feet yawing INWARD; hip_yaw
+        # is the DoF that rotates the foot about vertical, and -0.1 was too light to hold it
+        # forward. -0.25 straightens the feet while still leaving hip_yaw usable for steering
+        # (the yaw command is transient, and -0.25 is far below the -5 dof_pos_limits).
+        weight=-0.25,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"])},
     )
 
@@ -484,7 +488,9 @@ class RewardsCfg:
             # 0.25 s ends each step sooner => quicker cadence, shorter/lower swings, and less
             # time balancing on one crouched leg. Still well above a foot-tap; feet_air_time
             # stays the SOLE stepping driver (weight 2.0 unchanged, so stepping is not undercut).
-            "threshold": 0.25,
+            # 0.25 -> 0.30 (2026-08-01): a bit more single-support time per step so the swing
+            # knee has room to flex and re-extend (pairs with the raised swing-height cap above).
+            "threshold": 0.30,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
     )
@@ -509,7 +515,12 @@ class RewardsCfg:
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
             "asset_cfg": SceneEntityCfg("robot", body_names=".*_ankle_roll_link"),
-            "target_height": 0.075,
+            # 0.075 -> 0.10 (2026-08-01, STIFF-KNEE fix). MuJoCo sim2sim of model_9999 measured
+            # the swing knee flexing only ~0.30 rad (17 deg) vs ~60 deg natural — because the
+            # 3 cm swing cap barely lifts the foot, so the knee never NEEDS to bend. 0.10 = ankle
+            # origin 0.045 + 0.055 m sole clearance (natural low-walk foot lift) forces more
+            # swing-knee flexion to clear the higher foot. Still a low flat arc, NOT parade.
+            "target_height": 0.10,
         },
     )
     # L/R symmetry — RE-ENABLED 2026-07-29 at -0.5 (was disabled walk-first). This is the
@@ -523,7 +534,10 @@ class RewardsCfg:
     # first steps" worry, so full -1.0 now forces a mirror-image gait.
     air_time_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        weight=-1.0,
+        # -1.0 -> -1.5 (2026-08-01): MuJoCo sim2sim measured a persistent R>L limp (air_time
+        # L/R 0.25/0.38 s ~ 18-24% asym); -1.0 registered it but didn't correct it. Modest bump
+        # to -1.5 for more authority, kept below -2 to avoid over-suppressing the natural gait.
+        weight=-1.5,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     # -0.2 -> -0.5 (2026-07-26, matching tahiti/hv1_2). Closes the "slide/drag a planted
@@ -960,5 +974,8 @@ class H1_2FlatLegsEnvCfg_PLAY(H1_2FlatLegsEnvCfg):
         # play at the fully-grown command range (skip the curriculum ramp)
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
         self.curriculum.command_phase = None
-        # push_velocity_levels / payload_mass_levels / add_ee_payload are all disabled in
-        # the base cfg for the walk-first stage — nothing to override here.
+        # push_velocity_levels references the `push_robot` event term, which was
+        # disabled above — the curriculum would raise on the first reset. Turn it
+        # off too. (payload_mass_levels / add_ee_payload remain disabled in the
+        # base cfg for the walk-first stage — nothing to override for those.)
+        self.curriculum.push_velocity_levels = None

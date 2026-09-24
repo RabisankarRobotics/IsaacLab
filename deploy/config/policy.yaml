@@ -1,0 +1,79 @@
+# Real-robot policy config for Tahiti C1 (12-DoF bipedal).
+#
+# Consumed by robo_control's policy_service (SDK on OrangePi).
+# Copy to: /home/orangepi/robo_control/config/yaml/<your_folder>/policy.yaml
+# and update services.yaml's policy_service.command_params to point here.
+#
+# Paired MNN model: converted from
+#   deploy/model/tahiti_c1_leg_only/policy.onnx
+# with:
+#   MNNConvert -f ONNX --modelFile policy.onnx --MNNModel policy.mnn ...
+# Model I/O (v3 training, 2026-07-17):
+#   Input  "obs"    : [1, 225]  float  (5-step history × 45 per step)
+#   Output "actions": [1, 12]   float
+#
+# Space definitions:
+#   Policy (Isaac BFS) order:
+#     [L_hy, R_hy, L_hp, R_hp, L_hr, R_hr, L_kn, R_kn, L_ap, R_ap, L_ar, R_ar]
+#   Wire (leg-then-leg) order — what control_service publishes/consumes:
+#     [L_hy, L_hp, L_hr, L_kn, L_ap, L_ar, R_hy, R_hp, R_hr, R_kn, R_ap, R_ar]
+
+# Path is relative to launch CWD (typically /home/orangepi/robo_control).
+policy_path: "config/models/rabisankar/policy.mnn"
+
+num_joints: 12
+loop_hz: 50   # matches IsaacLab policy_dt = 0.02 s
+
+# Per-joint action_scale (WIRE order). Matches training v3
+# JointPositionActionCfg(scale={".*_ankle_roll_joint": 0.10, ".*": 0.25}).
+# Ankle_roll authority damped to 0.10 (positions 5 and 11 in wire order).
+action_scale:
+  [0.25, 0.25, 0.25, 0.25, 0.25, 0.10,
+   0.25, 0.25, 0.25, 0.25, 0.25, 0.10]
+
+# Policy index -> Wire index. Used by policy_service both when reading joint_state
+# (reorders wire -> policy) and when publishing joint_command (reorders policy -> wire).
+policy_to_actuator_map: [0, 6, 1, 7, 2, 8, 3, 9, 4, 10, 5, 11]
+
+# Default joint positions, in WIRE order (2026-07-17: matches training v3 pose
+# hip_pitch=-0.10, knee=0.30, ankle_pitch=+0.20 — aligned with robo_control
+# deploy base yaml).
+default_joint_pos:
+  [0.0, -0.10, 0.0, 0.30, 0.20, 0.0,
+   0.0, -0.10, 0.0, 0.30, 0.20, 0.0]
+
+# PD gains, in WIRE order. Hips/knees: kp=250 kd=25, ankles: kp=200 kd=20.
+# Kd values inverted 2026-07-17 to match the robo_control deploy base yaml.
+kp:
+  [250.0, 250.0, 250.0, 250.0, 200.0, 200.0,
+   250.0, 250.0, 250.0, 250.0, 200.0, 200.0]
+kd:
+  [25.0, 25.0, 25.0, 25.0, 20.0, 20.0,
+   25.0, 25.0, 25.0, 25.0, 20.0, 20.0]
+
+# Observation terms — order and dims MUST match Isaac flat_env_cfg PolicyCfg exactly.
+# Isaac declaration order (from ObservationsCfg): base_ang_vel, projected_gravity,
+# velocity_commands, joint_pos, joint_vel, actions.
+# Per-term dims:  3   +   3   +   3   +  12   +  12   +  12  = 45 per step.
+# history_length: 5 (2026-07-17) — matches training v3; total_dim = 225.
+# Flatten (per robo_control ObservationHistory.flatten and Isaac Lab
+# concatenate_terms=True): [term0_oldest..term0_newest, term1_oldest..., ...].
+observations:
+  history_length: 5
+  terms:
+    - ang_vel        # 3  — from IMU gyroscope (body frame)
+    - proj_gravity   # 3  — computed from IMU quaternion (body frame)
+    - vel_cmd        # 3  — from joystick [vx, vy, wz]
+    - joint_pos      # 12 — (q - q_default) in policy order
+    - joint_vel      # 12 — in policy order
+    - prev_actions   # 12 — last raw action output
+
+# Joystick stick deflections map linearly into these ranges.
+# Matches training curriculum Phase 3. lin_vel_x narrowed 1.0 → 0.8 on
+# 2026-07-16 to match the training range cut for a smoother gait.
+commands:
+  base_velocity:
+    ranges:
+      lin_vel_x: [-0.8, 0.8]
+      lin_vel_y: [-0.5, 0.5]
+      ang_vel_z: [-0.5, 0.5]

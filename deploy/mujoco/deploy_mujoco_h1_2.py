@@ -447,8 +447,9 @@ def main():
     # -- Gamepad options (defaults = H1_2 training command ranges) --
     parser.add_argument("--no_gamepad", action="store_true",
                         help="Disable the Xbox gamepad; drive from --cmd_lin_x/y/z.")
-    parser.add_argument("--vx_max", type=float, default=1.0,
-                        help="Forward-velocity at full stick (m/s). Match lin_vel_x range.")
+    parser.add_argument("--vx_max", type=float, default=0.8,
+                        help="Forward-velocity at full stick (m/s). Matches training lin_vel_x "
+                             "range (±0.8 as of 2026-08-01).")
     parser.add_argument("--vy_max", type=float, default=0.5,
                         help="Lateral-velocity at full stick (m/s). Match lin_vel_y range.")
     parser.add_argument("--wz_max", type=float, default=0.5,

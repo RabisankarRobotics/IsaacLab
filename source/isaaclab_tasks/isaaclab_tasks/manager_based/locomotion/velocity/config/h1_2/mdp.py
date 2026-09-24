@@ -798,6 +798,50 @@ def stand_still_joint_vel_penalty(
     return penalty * (cmd_norm < command_threshold)
 
 
+def stand_still_base_ang_vel_l2(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    command_threshold: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """L2 base angular velocity, gated to standing only (``|cmd| < threshold``).
+
+    Ported from the tahiti_c1 walker (proven fix). Kills the residual base
+    rotation/sway the robot carries INTO a stop — the momentum that tips it over
+    when the command goes to zero — WITHOUT touching walking dynamics (zero while
+    the robot is commanded to move). Use with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command(command_name)
+    cmd_norm = torch.norm(command[:, :3], dim=1)
+    standing_mask = (cmd_norm < command_threshold).float()
+    ang_vel = asset.data.root_ang_vel_b
+    return torch.sum(ang_vel * ang_vel, dim=1) * standing_mask
+
+
+def stand_still_pitch_penalty(
+    env: "ManagerBasedRLEnv",
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    command_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Penalize base tilt ONLY when cmd is near zero — kills the "lean-first" stop/start fall.
+
+    Ported from the tahiti_c1 walker (proven fix). On hardware the policy leans the
+    pelvis in the command direction BEFORE stepping (using gravity to make horizontal
+    velocity); motor lag turns that lean into overshoot -> a near-fall at every command
+    onset AND when decelerating to a stop. track_lin_vel rewards ANY horizontal velocity
+    (including tilt-generated) and the global flat_orientation is too weak at small tilts,
+    so nothing punishes the lean. This surgically punishes projected_gravity tilt only when
+    NOT commanding motion, leaving natural walking lean untouched. Use with a NEGATIVE weight.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    tilt = torch.sum(asset.data.projected_gravity_b[:, :2] ** 2, dim=1)
+    cmd = env.command_manager.get_command(command_name)
+    standing_mask = (torch.norm(cmd[:, :2], dim=1) < command_threshold).float()
+    return tilt * standing_mask
+
+
 def joint_deviation_l1_when_straight(
     env: "ManagerBasedRLEnv",
     command_name: str,

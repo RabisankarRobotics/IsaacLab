@@ -5,7 +5,7 @@ meta:
   run_dir: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_17-29-43
   checkpoint: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_17-29-43/model_19999.pt
 robot:
-  xml_path: /home/rabisankar/IsaacLab/deploy/mujoco/hv1_2_scene.xml
+  xml_path: /home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/urdf_mesh/hv1_2/hv1_2_without_ee/HV1_2_Without_Arms.urdf
   num_dof_total: 31
   joint_names_isaac_order:
   - left_hip_pitch_joint
@@ -411,8 +411,8 @@ commands:
   - 0.0
   _comment: Set EE pose commands at runtime (per-hand) in the MuJoCo runner.
 policy:
-  jit_path: /home/rabisankar/IsaacLab/deploy/model/hv1_2_loco_leg_only/walking_good_jun_18/3/policy.pt
-  onnx_path: /home/rabisankar/IsaacLab/deploy/model/hv1_2_loco_leg_only/walking_good_jun_18/3/policy.onnx
+  jit_path: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_17-29-43/exported/policy.pt
+  onnx_path: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_17-29-43/exported/policy.onnx
   exists: true
   size_mb: 0.81
   actor_obs_normalization: null

@@ -5,7 +5,7 @@ meta:
   run_dir: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_15-34-18
   checkpoint: /run/user/1000/gvfs/sftp:host=192.168.0.164,user=rabisankar/home/rabisankar/IsaacLab/logs/rsl_rl/hv1_2_velocity_flat/2026-06-18_15-34-18/model_16400.pt
 robot:
-  xml_path: /home/rabisankar/IsaacLab/source/isaaclab_assets/data/custom_robot/urdf_mesh/hv1_2/hv1_2_without_ee/HV1_2_Without_Arms.urdf
+  xml_path: /home/rabisankar/IsaacLab/deploy/mujoco/hv1_2_scene.xml
   num_dof_total: 31
   joint_names_isaac_order:
   - left_hip_pitch_joint

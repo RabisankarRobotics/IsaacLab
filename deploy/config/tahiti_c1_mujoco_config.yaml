@@ -215,8 +215,8 @@ commands:
   - 0.0
   _comment: Set EE pose commands at runtime (per-hand) in the MuJoCo runner.
 policy:
-  jit_path: /home/rabisankar/IsaacLab/deploy/model/tahiti_c1_leg_only/policy9/policy.pt
-  onnx_path: /home/rabisankar/IsaacLab/deploy/model/tahiti_c1_leg_only/policy9/policy.onnx
+  jit_path: /home/rabisankar/IsaacLab/deploy/model/tahiti_c1_leg_only/policy10/policy.pt
+  onnx_path: /home/rabisankar/IsaacLab/deploy/model/tahiti_c1_leg_only/policy10/policy.onnx
   size_mb: 0.74
   actor_obs_normalization: null
   actor_hidden_dims: null

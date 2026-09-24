@@ -224,7 +224,10 @@ class CommandsCfg:
         ),
         # Caps the curriculum. Omnidirectional, forward-biased for a clean walk.
         limit_ranges=UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-0.5, 0.5)
+            # lin_vel_x (-0.5, 1.0) -> (-0.8, 0.8) (2026-08-01): symmetric fwd/back range.
+            # Reduces top forward speed (1.0->0.8) and matches the backward magnitude — a
+            # SYMMETRIC command also removes the forward-bias that can feed gait asymmetry.
+            lin_vel_x=(-0.8, 0.8), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-0.5, 0.5)
         ),
     )
 
@@ -403,18 +406,22 @@ class RewardsCfg:
     # hip_yaw lightly penalized so the policy can still use it to steer.
     # weights -0.2 / -0.1 = official h1/g1 (were -1.0 / -0.5, i.e. 5x too strong). At 5x
     # the policy couldn't freely use its hips to catch a stumble / recover a push.
+    # -0.2 -> -1.0 (2026-08-01, ARC-WALK fix). The robot walks curving LEFT. On tahiti this
+    # exact symptom traced to hip_roll drift (~2 deg/side amplifies to ~5 deg steering drift);
+    # tahiti's "direct arc-walk attack" is hip_roll deviation -1.0 (H1_2 was at -0.2 = 5x too
+    # weak, a leftover from the walk-first de-escalation). Now that H1_2 walks, restore -1.0.
     joint_deviation_hip_roll = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.2,
+        weight=-1.0,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint"])},
     )
     joint_deviation_hip_yaw = RewTerm(
         func=mdp.joint_deviation_l1,
-        # -0.1 -> -0.25 (2026-08-01, TOE-IN fix). sim2sim shows the feet yawing INWARD; hip_yaw
-        # is the DoF that rotates the foot about vertical, and -0.1 was too light to hold it
-        # forward. -0.25 straightens the feet while still leaving hip_yaw usable for steering
-        # (the yaw command is transient, and -0.25 is far below the -5 dof_pos_limits).
-        weight=-0.25,
+        # -0.1 -> -0.25 (2026-08-01 toe-in) -> -0.7 (2026-08-01 arc-walk). hip_yaw is BOTH the
+        # foot-yaw (toe-in) and the body-yaw-drift DoF; the left arc means it drifts same-sign.
+        # tahiti's proven anti-drift wall is hip_yaw deviation -0.7 (keeps feet forward AND holds
+        # a straight line, still soft enough to steer). Matching it.
+        weight=-0.7,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_yaw_joint"])},
     )
 
@@ -534,10 +541,14 @@ class RewardsCfg:
     # first steps" worry, so full -1.0 now forces a mirror-image gait.
     air_time_variance = RewTerm(
         func=custom_mdp.air_time_variance_penalty,
-        # -1.0 -> -1.5 (2026-08-01): MuJoCo sim2sim measured a persistent R>L limp (air_time
-        # L/R 0.25/0.38 s ~ 18-24% asym); -1.0 registered it but didn't correct it. Modest bump
-        # to -1.5 for more authority, kept below -2 to avoid over-suppressing the natural gait.
-        weight=-1.5,
+        # -1.0 -> -1.5 -> -5.0 (2026-08-01). The R>L limp PERSISTED after the retrain: the log
+        # shows air_time_variance at -1.5 registers only -0.035 raw = toothless (the policy just
+        # pays the tiny tax and keeps limping). tahiti's PROVEN value for the same asymmetry is
+        # -5.0 (3.3x). Matching it. NOTE: even -5.0 has a ceiling (tahiti's comment: a determined
+        # limp can still game variance) — if it survives this, the definitive fix is RSL-RL MIRROR
+        # SYMMETRY augmentation (available in rsl_rl extensions/symmetry.py), which forces L/R
+        # symmetry at the data level rather than taxing the asymmetry.
+        weight=-5.0,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     # -0.2 -> -0.5 (2026-07-26, matching tahiti/hv1_2). Closes the "slide/drag a planted
@@ -647,12 +658,34 @@ class RewardsCfg:
     # -- idle: kill the "parade" march / standing vibration. Penalize leg deviation
     #    from the default stance while standing (command ~ 0). This is the primary
     #    driver of the "no vibration when standing" requirement.
+    # STAND-STILL STABILIZATION 2026-08-01 — the "fall when the command stops" fix.
+    # MuJoCo deploy: when cmd->0 (sudden OR gradual) the robot disbalances and falls.
+    # H1_2 had ONLY the leg-pose stand_still (below); the user's PROVEN tahiti biped uses
+    # THREE standstill terms (all -3.0, gated |cmd|<0.1) — the two H1_2 lacked are what
+    # actually keep it upright at a stop: (1) base_ang_vel L2 kills the rotation/sway
+    # carried INTO the stop, (2) pitch kills the "lean-first" overshoot at command onset/
+    # release (tahiti's exact hardware finding). All fire ONLY when standing, so the
+    # walking gait is untouched. Weights matched to tahiti (-3.0). stand_still -1.0 -> -3.0.
     stand_still = RewTerm(
         func=custom_mdp.stand_still_penalty,
-        weight=-1.0,
+        weight=-3.0,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot", joint_names=LEG_JOINT_NAMES),
+        },
+    )
+    stand_still_base_ang_vel = RewTerm(
+        func=custom_mdp.stand_still_base_ang_vel_l2,
+        weight=-3.0,
+        params={"command_name": "base_velocity", "command_threshold": 0.1},
+    )
+    stand_still_pitch = RewTerm(
+        func=custom_mdp.stand_still_pitch_penalty,
+        weight=-3.0,
+        params={
+            "command_name": "base_velocity",
+            "command_threshold": 0.1,
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
 
@@ -887,7 +920,7 @@ class CurriculumCfg:
             "stand_until_iters": 0,     # no pure-stand phase (was 2000 — the standing attractor)
             "slow_until_iters": 1000,   # short slow ramp; full command from iter 1000 (was 5000)
             "slow_scale": 0.3,
-            "lin_vel_x_full": (-0.5, 1.0),  # == limit_ranges.lin_vel_x
+            "lin_vel_x_full": (-0.8, 0.8),  # == limit_ranges.lin_vel_x (2026-08-01: was (-0.5,1.0))
             "lin_vel_y_full": (-0.5, 0.5),  # == limit_ranges.lin_vel_y
             "ang_vel_z_full": (-0.5, 0.5),  # == limit_ranges.ang_vel_z
             "rel_standing_envs_phase1": 1.0,  # unused now (Phase 1 skipped)
